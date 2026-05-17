@@ -27,13 +27,13 @@ CFLAGS_LIB = $(CFLAGS) -shared
 LDFLAGS ?= -Wl,--no-as-needed
 LDFLAGS_LIB = $(LDFLAGS) -ldl
 
-SOURCES := hooksqfs.c logging.c hashmap.c sqfs_file.c
+SOURCES := hooksqfs.c logging.c utils.c sqfs_file.c
 
 libhooksqfs.so: $(SOURCES)
 	gcc $(ARCH_CFLAGS) $(CFLAGS_LIB) -o $@ $(SOURCES) $(INCLUDES) $(LDFLAGS_LIB) $(LDLIBS)
 
-test: $(SOURCES)
-	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) $(INCLUDES) $(LDLIBS)
+test: $(SOURCES) test.c
+	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) test.c $(INCLUDES) $(LDLIBS)
 
 # Ubuntu x86_64 does not have 32-bit libsquashfs-dev, so we need to install them manually
 get-libsquashfs-i386:

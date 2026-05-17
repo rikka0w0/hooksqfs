@@ -195,11 +195,3 @@ void sqfs_mgr_load_file(void)
 
 	sqfs_free(file);
 }
-
-int main(void)
-{
-	sqfs_mgr_load_file();
-	extern void map_test(void);
-	map_test();
-	return 0;
-}
