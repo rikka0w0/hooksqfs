@@ -13,8 +13,8 @@ endif
 CFLAGS ?= -fPIC -shared -O2 -Wall -Wextra
 LDFLAGS ?= -ldl
 
-libhooksqfs.so: hooksqfs.c
-	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
+libhooksqfs.so: hooksqfs.c logging.c
+	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ hooksqfs.c logging.c $(LDFLAGS)
 
 install-deps:
 	sudo apt install linux-libc-dev:i386
