@@ -1,7 +1,9 @@
 #include <stdlib.h>
 #include <sqfs/compressor.h>
+#include <sqfs/data_reader.h>
 #include <sqfs/dir.h>
 #include <sqfs/dir_reader.h>
+#include <sqfs/inode.h>
 #include <sqfs/super.h>
 #include <sqfs/io.h>
 
@@ -15,11 +17,25 @@ static const char *sqfs_compressor_name_readable(SQFS_COMPRESSOR id)
 	return name != NULL ? name : "unknown";
 }
 
+static void bytes_to_hex(const sqfs_u8 *in, size_t count, char *out)
+{
+	static const char hex[] = "0123456789abcdef";
+	size_t i;
+
+	for (i = 0; i < count; i++) {
+		out[i * 2] = hex[in[i] >> 4];
+		out[i * 2 + 1] = hex[in[i] & 0x0F];
+	}
+
+	out[count * 2] = '\0';
+}
+
 static void sqfs_mgr_log_root_dir(sqfs_file_t *file, const sqfs_super_t *super)
 {
 	sqfs_compressor_config_t cfg;
 	sqfs_compressor_t *cmp = NULL;
 	sqfs_dir_reader_t *dir = NULL;
+	sqfs_data_reader_t *data = NULL;
 	sqfs_inode_generic_t *root = NULL;
 	int ret;
 
@@ -45,6 +61,18 @@ static void sqfs_mgr_log_root_dir(sqfs_file_t *file, const sqfs_super_t *super)
 		}
 	}
 
+	data = sqfs_data_reader_create(file, super->block_size, cmp, 0);
+	if (data == NULL) {
+		log_msg("sqfs_data_reader_create failed\n");
+		goto out;
+	}
+
+	ret = sqfs_data_reader_load_fragment_table(data, super);
+	if (ret != 0) {
+		log_msg("sqfs_data_reader_load_fragment_table failed: %d\n", ret);
+		goto out;
+	}
+
 	dir = sqfs_dir_reader_create(super, cmp, file, 0);
 	if (dir == NULL) {
 		log_msg("sqfs_dir_reader_create failed\n");
@@ -63,9 +91,15 @@ static void sqfs_mgr_log_root_dir(sqfs_file_t *file, const sqfs_super_t *super)
 		goto out;
 	}
 
-	log_msg("/ directory entries:\n");
+	log_msg("/ files:\n");
 	for (;;) {
 		sqfs_dir_entry_t *entry = NULL;
+		sqfs_inode_generic_t *inode = NULL;
+		sqfs_u64 size = 0;
+		sqfs_u8 head[16];
+		char hex[sizeof(head) * 2 + 1];
+		sqfs_u32 want;
+		sqfs_s32 got;
 
 		ret = sqfs_dir_reader_read(dir, &entry);
 		if (ret > 0)
@@ -75,12 +109,51 @@ static void sqfs_mgr_log_root_dir(sqfs_file_t *file, const sqfs_super_t *super)
 			break;
 		}
 
-		log_msg("  %.*s\n", (int)entry->size + 1, entry->name);
+		if (entry->type != SQFS_INODE_FILE &&
+		    entry->type != SQFS_INODE_EXT_FILE) {
+			sqfs_free(entry);
+			continue;
+		}
+
+		ret = sqfs_dir_reader_get_inode(dir, &inode);
+		if (ret != 0) {
+			log_msg("  %.*s size=? head16=<inode error %d>\n",
+				(int)entry->size + 1, entry->name, ret);
+			sqfs_free(entry);
+			continue;
+		}
+
+		ret = sqfs_inode_get_file_size(inode, &size);
+		if (ret != 0) {
+			log_msg("  %.*s size=? head16=<size error %d>\n",
+				(int)entry->size + 1, entry->name, ret);
+			sqfs_free(inode);
+			sqfs_free(entry);
+			continue;
+		}
+
+		want = size < sizeof(head) ? (sqfs_u32)size : (sqfs_u32)sizeof(head);
+		got = want > 0 ? sqfs_data_reader_read(data, inode, 0, head, want) : 0;
+		if (got < 0) {
+			log_msg("  %.*s size=%llu head16=<read error %d>\n",
+				(int)entry->size + 1, entry->name,
+				(unsigned long long)size, (int)got);
+			sqfs_free(inode);
+			sqfs_free(entry);
+			continue;
+		}
+
+		bytes_to_hex(head, (size_t)got, hex);
+		log_msg("  %.*s size=%llu head16=%s\n",
+			(int)entry->size + 1, entry->name,
+			(unsigned long long)size, hex);
+		sqfs_free(inode);
 		sqfs_free(entry);
 	}
 
 out:
 	sqfs_free(root);
+	sqfs_destroy(data);
 	sqfs_destroy(dir);
 	sqfs_destroy(cmp);
 }
