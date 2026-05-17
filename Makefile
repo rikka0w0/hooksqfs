@@ -20,13 +20,18 @@ endif
 
 LDLIBS = $(shell $(PKG_CONFIG_CMD) --cflags --libs libsquashfs1)
 
-CFLAGS ?= -fPIC -shared -O2 -Wall -Wextra
-LDFLAGS ?= -ldl -Wl,--no-as-needed
+CFLAGS ?= -fPIC -O2 -Wall -Wextra
+CFLAGS_LIB = $(CFLAGS) -shared
+LDFLAGS ?= -Wl,--no-as-needed
+LDFLAGS_LIB = $(LDFLAGS) -ldl
 
 SOURCES := hooksqfs.c logging.c sqfs_file.c
 
 libhooksqfs.so: $(SOURCES)
-	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) $(LDFLAGS) $(LDLIBS)
+	gcc $(ARCH_CFLAGS) $(CFLAGS_LIB) -o $@ $(SOURCES) $(LDFLAGS_LIB) $(LDLIBS)
+
+test: $(SOURCES)
+	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) $(LDLIBS)
 
 # Ubuntu x86_64 does not have 32-bit libsquashfs-dev, so we need to install them manually
 get-libsquashfs-i386:
@@ -45,3 +50,4 @@ get-deps:
 
 clean:
 	rm -f libhooksqfs.so
+	rm -f test
