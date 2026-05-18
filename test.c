@@ -1,4 +1,4 @@
-#include "sqfs_file.h"
+#include "sqfs_mgr.h"
 #include "utils.h"
 #include "logging.h"
 
@@ -83,8 +83,10 @@ static void test_is_under_hooksqfs_prefix(void) {
 
 int main(void)
 {
-	sqfs_mgr_load_file();
-	map_test();
+	// extern void test_sqfs_listing(void);
+	// test_sqfs_listing();
+	sqfs_mgr_load_image();
+	//map_test();
 	test_is_under_hooksqfs_prefix();
 	return 0;
 }

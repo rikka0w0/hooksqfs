@@ -2,16 +2,91 @@
 #include "uthash.h"
 #include "logging.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
 
 struct PtrHashMapEntry {
 	void *key;
 	void *value;
 	UT_hash_handle hh;
 };
+
+static int create_memfd(int flags)
+{
+#ifdef SYS_memfd_create
+	unsigned int memfd_flags = 0;
+
+	if (flags & O_CLOEXEC) {
+		memfd_flags |= MFD_CLOEXEC;
+	}
+
+	return (int)syscall(SYS_memfd_create, "hooksqfs", memfd_flags);
+#else
+	(void)flags;
+	errno = ENOSYS;
+	return -1;
+#endif
+}
+
+static int create_unlinked_tmp_fd(int flags)
+{
+	static unsigned long counter;
+	char path[128];
+	int fd = -1;
+	int open_flags = O_RDWR | O_CREAT | O_EXCL;
+
+#ifdef O_CLOEXEC
+	if (flags & O_CLOEXEC) {
+		open_flags |= O_CLOEXEC;
+	}
+#endif
+
+	for (int i = 0; i < 128; i++) {
+		unsigned long id = counter++;
+
+		snprintf(path, sizeof(path), "/tmp/hooksqfs-%ld-%lu",
+			 (long)getpid(), id);
+
+		fd = (int)syscall(SYS_openat, AT_FDCWD, path, open_flags, 0600);
+		if (fd >= 0) {
+			syscall(SYS_unlinkat, AT_FDCWD, path, 0);
+			return fd;
+		}
+
+		if (errno != EEXIST) {
+			return -1;
+		}
+	}
+
+	errno = EEXIST;
+	return -1;
+}
+
+int create_backing_fd(int flags)
+{
+	int fd = create_memfd(flags);
+
+	if (fd >= 0) {
+		return fd;
+	}
+
+	if (errno != ENOSYS && errno != EINVAL) {
+		return -1;
+	}
+
+	return create_unlinked_tmp_fd(flags);
+}
 
 void map_put(PtrHashMap *map, void *key, void *value) {
 	struct PtrHashMapEntry *entry = NULL;
@@ -160,6 +235,23 @@ bool path_normalize_lexical(const char *in, char *out, size_t out_size)
 	return true;
 }
 
+bool path_equals_normalized(const char *a, const char *b)
+{
+	char norm_a[PATH_MAX];
+	char norm_b[PATH_MAX];
+
+	if (a == NULL || b == NULL) {
+		return false;
+	}
+
+	if (!path_normalize_lexical(a, norm_a, sizeof(norm_a)) ||
+	    !path_normalize_lexical(b, norm_b, sizeof(norm_b))) {
+		return false;
+	}
+
+	return strcmp(norm_a, norm_b) == 0;
+}
+
 bool path_relative_to_root(const char *root,
                            const char *path,
                            char *relative_out,
@@ -286,4 +378,3 @@ bool path_is_under_prefix(const char* prefix, const char *path)
 
 	return false;
 }
-

@@ -10,7 +10,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include "logging.h"
-#include "sqfs_file.h"
+#include "sqfs_mgr.h"
 
 static struct {
 	int populated;
@@ -72,11 +72,6 @@ static void real_populate(void) {
 	real.populated = 1;
 }
 
-static void init_if_required(void) {
-	real_populate();
-	sqfs_mgr_load_file();
-}
-
 /* ------------------------------------------------------------------ */
 /* open / open64                                                       */
 /* ------------------------------------------------------------------ */
@@ -92,7 +87,7 @@ static int flags_need_mode(int flags)
 
 int open(const char *pathname, int flags, ...)
 {
-	init_if_required();
+	real_populate();
 
 	mode_t mode = 0;
 	int has_mode = flags_need_mode(flags);
@@ -103,11 +98,29 @@ int open(const char *pathname, int flags, ...)
 		mode = (mode_t)va_arg(ap, int);
 		va_end(ap);
 
+		int sqfs_fd = sqfs_open(pathname, flags, mode);
+		if (sqfs_fd >= 0) {
+			log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o, sqfs_fd=%d\n",
+					pathname , flags, mode, sqfs_fd);
+			return sqfs_fd;
+		}
+		if (errno != ENOENT)
+			return -1;
+
 		log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o\n",
 				pathname , flags, mode);
 
 		return real.open(pathname, flags, mode);
 	} else {
+		int sqfs_fd = sqfs_open(pathname, flags);
+		if (sqfs_fd >= 0) {
+			log_hook(__func__, "path=\"%s\", flags=0x%x, sqfs_fd=%d\n",
+					pathname , flags, sqfs_fd);
+			return sqfs_fd;
+		}
+		if (errno != ENOENT)
+			return -1;
+
 		log_hook(__func__, "path=\"%s\", flags=0x%x\n",
 				pathname , flags);
 
@@ -117,7 +130,7 @@ int open(const char *pathname, int flags, ...)
 
 int open64(const char *pathname, int flags, ...)
 {
-	init_if_required();
+	real_populate();
 
 	mode_t mode = 0;
 	int has_mode = flags_need_mode(flags);
@@ -128,11 +141,29 @@ int open64(const char *pathname, int flags, ...)
 		mode = (mode_t)va_arg(ap, int);
 		va_end(ap);
 
+		int sqfs_fd = sqfs_open(pathname, flags, mode);
+		if (sqfs_fd >= 0) {
+			log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o, sqfs_fd=%d\n",
+					pathname , flags, mode, sqfs_fd);
+			return sqfs_fd;
+		}
+		if (errno != ENOENT)
+			return -1;
+
 		log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o\n",
 				pathname , flags, mode);
 
 		return real.open64(pathname, flags, mode);
 	} else {
+		int sqfs_fd = sqfs_open(pathname, flags);
+		if (sqfs_fd >= 0) {
+			log_hook(__func__, "path=\"%s\", flags=0x%x, sqfs_fd=%d\n",
+					pathname , flags, sqfs_fd);
+			return sqfs_fd;
+		}
+		if (errno != ENOENT)
+			return -1;
+
 		log_hook(__func__, "path=\"%s\", flags=0x%x\n",
 				pathname , flags);
 
@@ -146,7 +177,7 @@ int open64(const char *pathname, int flags, ...)
 
 int openat(int dirfd, const char *pathname, int flags, ...)
 {
-	init_if_required();
+	real_populate();
 
 	mode_t mode = 0;
 	int has_mode = flags_need_mode(flags);
@@ -171,7 +202,7 @@ log_hook(__func__, "dirfd=%d, path=\"%s\", flags=0x%x\n",
 
 int openat64(int dirfd, const char *pathname, int flags, ...)
 {
-	init_if_required();
+	real_populate();
 
 	mode_t mode = 0;
 	int has_mode = flags_need_mode(flags);
@@ -200,7 +231,7 @@ log_hook(__func__, "dirfd=%d, path=\"%s\", flags=0x%x\n",
 
 FILE *fopen(const char *pathname, const char *mode)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "path=\"%s\", mode=\"%s\"\n",
 			pathname, mode );
@@ -210,7 +241,7 @@ FILE *fopen(const char *pathname, const char *mode)
 
 FILE *fopen64(const char *pathname, const char *mode)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "path=\"%s\", mode=\"%s\"\n",
 			pathname, mode);
@@ -224,7 +255,7 @@ FILE *fopen64(const char *pathname, const char *mode)
 
 DIR *opendir(const char *name)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "path=\"%s\"\n", name);
 
@@ -233,7 +264,7 @@ DIR *opendir(const char *name)
 
 DIR *opendir64(const char *name)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "path=\"%s\"\n", name);
 
@@ -242,7 +273,7 @@ DIR *opendir64(const char *name)
 
 DIR *fdopendir(int fd)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "fd=%d\n", fd);
 
@@ -251,7 +282,7 @@ DIR *fdopendir(int fd)
 
 struct dirent *readdir(DIR *dirp)
 {
-	init_if_required();
+	real_populate();
 
 	struct dirent * entry = real.readdir(dirp);
 	log_hook(__func__, "%s\n", entry ? entry->d_name : "(null)");
@@ -261,7 +292,7 @@ struct dirent *readdir(DIR *dirp)
 
 struct dirent64 *readdir64(DIR *dirp)
 {
-	init_if_required();
+	real_populate();
 
 	struct dirent64 * entry = real.readdir64(dirp);
 	log_hook(__func__, "%s\n", entry ? entry->d_name : "(null)");
@@ -271,7 +302,7 @@ struct dirent64 *readdir64(DIR *dirp)
 
 int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "dir=0x%p, entry=0x%p\n",
 			(void *)dirp, (void *)entry);
@@ -281,7 +312,7 @@ int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result)
 
 int readdir64_r(DIR *dirp, struct dirent64 *entry, struct dirent64 **result)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "dir=0x%p, entry=0x%p\n",
 			(void *)dirp, (void *)entry);
@@ -291,7 +322,7 @@ int readdir64_r(DIR *dirp, struct dirent64 *entry, struct dirent64 **result)
 
 int closedir(DIR *dirp)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "dir=0x%p\n", (void *)dirp);
 
@@ -304,7 +335,7 @@ int closedir(DIR *dirp)
 
 int access(const char *pathname, int mode)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "path=\"%s\", mode=0x%x\n",
 		pathname, mode);
@@ -314,7 +345,7 @@ int access(const char *pathname, int mode)
 
 int faccessat(int dirfd, const char *pathname, int mode, int flags)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "dirfd=%d, path=\"%s\", mode=0x%x, flags=0x%x\n",
 			dirfd, pathname, mode, flags);
@@ -328,7 +359,7 @@ int faccessat(int dirfd, const char *pathname, int mode, int flags)
 
 int __xstat(int ver, const char *pathname, struct stat *buf)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "ver=%d, path=\"%s\"\n",
 			ver, pathname ? pathname : "(null)");
@@ -338,7 +369,7 @@ int __xstat(int ver, const char *pathname, struct stat *buf)
 
 int __lxstat(int ver, const char *pathname, struct stat *buf)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "ver=%d, path=\"%s\"\n",
 			ver, pathname ? pathname : "(null)");
@@ -348,7 +379,7 @@ int __lxstat(int ver, const char *pathname, struct stat *buf)
 
 int __fxstat(int ver, int fd, struct stat *buf)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "ver=%d, fd=%d\n", ver, fd);
 
@@ -358,7 +389,7 @@ int __fxstat(int ver, int fd, struct stat *buf)
 #ifdef __USE_LARGEFILE64
 int __xstat64(int ver, const char *pathname, struct stat64 *buf)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "ver=%d, path=\"%s\"\n",
 			ver, pathname ? pathname : "(null)");
@@ -368,7 +399,7 @@ int __xstat64(int ver, const char *pathname, struct stat64 *buf)
 
 int __lxstat64(int ver, const char *pathname, struct stat64 *buf)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "ver=%d, path=\"%s\"\n",
 			ver, pathname ? pathname : "(null)");
@@ -378,7 +409,7 @@ int __lxstat64(int ver, const char *pathname, struct stat64 *buf)
 
 int __fxstat64(int ver, int fd, struct stat64 *buf)
 {
-	init_if_required();
+	real_populate();
 
 	log_hook(__func__, "ver=%d, fd=%d\n", ver, fd);
 
