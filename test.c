@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 static PtrHashMap g_pxMapDIR = NULL;
+static PtrHashMap* qwq = &g_pxMapDIR;
 
 static void map_test(void) {
 	int a = 123;
@@ -15,7 +16,7 @@ static void map_test(void) {
 	void *value = &b;
 
 	/* 插入 */
-	map_put(&g_pxMapDIR, key, value);
+	map_put(qwq, key, value);
 
 	/* 查询 */
 	int *found = map_get(g_pxMapDIR, key);
@@ -26,7 +27,7 @@ static void map_test(void) {
 	}
 
 	/* 更新同一个 key */
-	map_put(&g_pxMapDIR, key, &c);
+	map_put(qwq, key, &c);
 
 	found = map_get(g_pxMapDIR, key);
 	if (found != NULL) {
@@ -51,10 +52,27 @@ static void map_test(void) {
 	map_free_all(&g_pxMapDIR);
 }
 
+static void test_is_under_hooksqfs_prefix(void) {
+	const char *paths[] = {
+		"/other/../hook/somefile",
+		"/hook/somepath/../somefile",
+		"/hook/somefile",
+		"/hook/",
+		"/hook",
+		"/other/somefile",
+		NULL
+	};
+
+	for (int i = 0; paths[i] != NULL; i++) {
+		log_msg("is_under_hooksqfs_prefix('%s'): %s\n", paths[i],
+				is_under_hooksqfs_prefix(paths[i]) ? "true" : "false");
+	}
+}
+
 int main(void)
 {
 	sqfs_mgr_load_file();
 	map_test();
-	
+	test_is_under_hooksqfs_prefix();
 	return 0;
 }
