@@ -1,7 +1,11 @@
+#define _GNU_SOURCE
+
 #include "utils.h"
 #include "uthash.h"
 #include "logging.h"
+#include "real.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -9,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -21,6 +26,50 @@ struct PtrHashMapEntry {
 	void *value;
 	UT_hash_handle hh;
 };
+
+DIR *create_backing_dir(void)
+{
+	static unsigned long counter;
+	char path[128];
+	int fd;
+	int saved_errno;
+
+	for (int i = 0; i < 128; i++) {
+		unsigned long id = counter++;
+
+		snprintf(path, sizeof(path), "/tmp/hooksqfs-dir-%ld-%lu",
+			 (long)getpid(), id);
+
+		if (mkdir(path, 0700) != 0) {
+			if (errno == EEXIST) {
+				continue;
+			}
+			return NULL;
+		}
+
+		fd = real.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		saved_errno = errno;
+		rmdir(path);
+
+		if (fd < 0) {
+			errno = saved_errno;
+			return NULL;
+		}
+
+		DIR *dir = real.fdopendir(fd);
+		if (dir == NULL) {
+			saved_errno = errno;
+			syscall(SYS_close, fd);
+			errno = saved_errno;
+			return NULL;
+		}
+
+		return dir;
+	}
+
+	errno = EEXIST;
+	return NULL;
+}
 
 static int create_memfd(int flags)
 {

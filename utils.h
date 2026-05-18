@@ -1,6 +1,7 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include <dirent.h>
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -12,6 +13,7 @@ int map_delete(PtrHashMap *map, void *key);
 void map_free_all(PtrHashMap *map);
 
 int create_backing_fd(int flags);
+DIR *create_backing_dir(void);
 
 bool path_normalize_lexical(const char *in, char *out, size_t out_size);
 bool path_equals_normalized(const char *a, const char *b);

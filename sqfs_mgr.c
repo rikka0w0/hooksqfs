@@ -19,13 +19,15 @@
 
 #include "utils.h"
 #include "logging.h"
+#include "real.h"
 
 #include "uthash.h"
 
 void sqfs_util_log_failure(const char* func, int err);
 
 struct DirMapEntry {
-	void *key;
+	DIR *key; // The underlying DIR* pointer.
+	sqfs_dir_reader_t *dir_reader;
 	UT_hash_handle hh;
 };
 
@@ -295,7 +297,7 @@ int sqfs_open(const char *pathname, int flags, ...) {
 	if (fd < 0)
 		goto error_and_free_inode;
 
-	struct FDMapEntry *fd_entry = malloc(sizeof(*fd_entry));
+	struct FDMapEntry *fd_entry = malloc(sizeof(struct FDMapEntry));
 	if (fd_entry == NULL) {
 		errno = ENOMEM;
 		syscall(SYS_close, fd);
@@ -313,23 +315,119 @@ error_and_free_inode:
 }
 
 DIR * sqfs_opendir(const char *name) {
-	// 首先用path_is_under_prefix判断下name是否在HOOKSQFS_PREFIX下
-	// 如果不在就直接返回NULL。NULL的含义是这个name不能由sqfs_mgr处理。
+	const char *prefix = sqfs_mgr_get_prefix();
+	const char *sqfs_path = getenv("HOOKSQFS_FILE");
+	char relative[PATH_MAX];
 
-	// 然后用path_relative_to_root处理下name，得到相对于根目录的路径
+	if (name == NULL) {
+		errno = EFAULT;
+		return NULL;
+	}
 
-	return NULL; // Stub
+	if (!path_is_under_prefix(prefix, name)) {
+		errno = ENOENT;
+		return NULL;
+	}
+
+	if (path_equals_normalized(name, sqfs_path)) {
+		errno = ENOENT;
+		return NULL;
+	}
+
+	if (!path_relative_to_root(prefix, name, relative, sizeof(relative))) {
+		errno = ENOENT;
+		return NULL;
+	}
+
+	log_msg("sqfs_opendir: %s -> %s\n", name, relative);
+
+	if (!sqfs_mgr_load_image()) {
+		errno = ENOENT;
+		return NULL;
+	}
+
+	sqfs_dir_reader_t *dir_reader = sqfs_dir_reader_create(
+		&g_xSqfsMgr.super, g_xSqfsMgr.compressor, g_xSqfsMgr.file, 0);
+	if (dir_reader == NULL) {
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	sqfs_inode_generic_t *inode = NULL;
+	int ret;
+	if (relative[0] == '\0') {
+		ret = sqfs_dir_reader_get_root_inode(dir_reader, &inode);
+	} else {
+		ret = sqfs_dir_reader_find_by_path(dir_reader, NULL, relative, &inode);
+	}
+	if (ret != 0) {
+		sqfs_util_log_failure("sqfs_dir_reader_find_by_path", ret);
+		errno = errno_from_sqfs(ret);
+		goto out;
+	}
+
+	if (inode->base.type != SQFS_INODE_DIR &&
+	       inode->base.type != SQFS_INODE_EXT_DIR) {
+		errno = ENOTDIR;
+		goto out;
+	}
+
+	ret = sqfs_dir_reader_open_dir(dir_reader, inode, 0);
+	if (ret != 0) {
+		sqfs_util_log_failure("sqfs_dir_reader_open_dir", ret);
+		errno = errno_from_sqfs(ret);
+		goto out;
+	}
+
+	DIR *underlying_dir = create_backing_dir();
+	if (underlying_dir == NULL)
+		goto out;
+
+	struct DirMapEntry *dir_entry = malloc(sizeof(struct DirMapEntry));
+	if (dir_entry == NULL) {
+		errno = ENOMEM;
+		real.closedir(underlying_dir);
+		goto out;
+	}
+
+	dir_entry->key = underlying_dir;
+	dir_entry->dir_reader = dir_reader;
+	HASH_ADD_PTR(g_xSqfsMgr.dir_map, key, dir_entry);
+
+	sqfs_free(inode);
+	return underlying_dir;
+
+out:
+	int saved_errno = errno;
+
+	sqfs_free(inode);
+	sqfs_destroy(dir_reader);
+
+	errno = saved_errno;
+	return NULL;
 }
 
 int sqfs_closedir(DIR *dir) {
-	struct DirMapEntry *found;
-	// 首先在g_pxMapDIR里尝试以dir为key
-	// 用HASH_FIND_PTR(g_xSqfsMgr.dir_map, &dir, found);
-	// 找到dir对应的sqfs entry。
-	// 如果找不到，说明这个dir不是sqfs_mgr打开的，直接返回-1， 不设置errno
+	struct DirMapEntry *found = NULL;
+	int ret = 0;
 
-	// 如果找到了，说明这个dir是sqfs_mgr打开的，继续调用sqfs_dir_reader_destroy销毁这个entry里的sqfs dir reader对象
-	return 1;  // Stub
+	HASH_FIND_PTR(g_xSqfsMgr.dir_map, &dir, found);
+	if (found == NULL)
+		return -1;
+
+	HASH_DEL(g_xSqfsMgr.dir_map, found);
+
+	sqfs_destroy(found->dir_reader);
+
+	if (real.closedir == NULL) {
+		errno = ENOSYS;
+		ret = -1;
+	} else {
+		ret = real.closedir(found->key);
+	}
+
+	free(found);
+	return ret;
 }
 
 

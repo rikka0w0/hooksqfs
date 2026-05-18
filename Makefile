@@ -27,7 +27,7 @@ CFLAGS_LIB = $(CFLAGS) -shared
 LDFLAGS ?= -Wl,--no-as-needed
 LDFLAGS_LIB = $(LDFLAGS) -ldl
 
-SOURCES := hooksqfs.c logging.c utils.c sqfs_mgr.c
+SOURCES := hooksqfs.c logging.c utils.c real.c sqfs_mgr.c
 
 libhooksqfs.so: $(SOURCES)
 	gcc $(ARCH_CFLAGS) $(CFLAGS_LIB) -o $@ $(SOURCES) $(INCLUDES) $(LDFLAGS_LIB) $(LDLIBS)

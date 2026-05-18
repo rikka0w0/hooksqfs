@@ -11,66 +11,7 @@
 #include <errno.h>
 #include "logging.h"
 #include "sqfs_mgr.h"
-
-static struct {
-	int populated;
-	int (*open)(const char *pathname, int flags, ...);
-	int (*open64)(const char *pathname, int flags, ...);
-	int (*openat)(int dirfd, const char *pathname, int flags, ...);
-	int (*openat64)(int dirfd, const char *pathname, int flags, ...);
-	FILE *(*fopen)(const char *pathname, const char *mode);
-	FILE *(*fopen64)(const char *pathname, const char *mode);
-	DIR *(*opendir)(const char *name);
-	DIR *(*opendir64)(const char *name);
-	DIR *(*fdopendir)(int fd);
-	struct dirent *(*readdir)(DIR *dirp);
-	struct dirent64 *(*readdir64)(DIR *dirp);
-	int (*readdir_r)(DIR *dirp, struct dirent *entry, struct dirent **result);
-	int (*readdir64_r)(DIR *dirp, struct dirent64 *entry, struct dirent64 **result);
-	int (*closedir)(DIR *dirp);
-	int (*access)(const char *pathname, int mode);
-	int (*faccessat)(int dirfd, const char *pathname, int mode, int flags);
-	int (*__xstat)(int ver, const char *pathname, struct stat *buf);
-	int (*__lxstat)(int ver, const char *pathname, struct stat *buf);
-	int (*__fxstat)(int ver, int fd, struct stat *buf);
-#ifdef __USE_LARGEFILE64
-	int (*__xstat64)(int ver, const char *pathname, struct stat64 *buf);
-	int (*__lxstat64)(int ver, const char *pathname, struct stat64 *buf);
-	int (*__fxstat64)(int ver, int fd, struct stat64 *buf);
-#endif
-} real = {0};
-
-static void real_populate(void) {
-	if (real.populated)
-		return;
-
-	real.open = dlsym(RTLD_NEXT, "open");
-	real.open64 = dlsym(RTLD_NEXT, "open64");
-	real.openat = dlsym(RTLD_NEXT, "openat");
-	real.openat64 = dlsym(RTLD_NEXT, "openat64");
-	real.fopen = dlsym(RTLD_NEXT, "fopen");
-	real.fopen64 = dlsym(RTLD_NEXT, "fopen64");
-	real.opendir = dlsym(RTLD_NEXT, "opendir");
-	real.opendir64 = dlsym(RTLD_NEXT, "opendir64");
-	real.fdopendir = dlsym(RTLD_NEXT, "fdopendir");
-	real.readdir = dlsym(RTLD_NEXT, "readdir");
-	real.readdir64 = dlsym(RTLD_NEXT, "readdir64");
-	real.readdir_r = dlsym(RTLD_NEXT, "readdir_r");
-	real.readdir64_r = dlsym(RTLD_NEXT, "readdir64_r");
-	real.closedir = dlsym(RTLD_NEXT, "closedir");
-	real.access = dlsym(RTLD_NEXT, "access");
-	real.faccessat = dlsym(RTLD_NEXT, "faccessat");
-	real.__xstat = dlsym(RTLD_NEXT, "__xstat");
-	real.__lxstat = dlsym(RTLD_NEXT, "__lxstat");
-	real.__fxstat = dlsym(RTLD_NEXT, "__fxstat");
-#ifdef __USE_LARGEFILE64
-	real.__xstat64 = dlsym(RTLD_NEXT, "__xstat64");
-	real.__lxstat64 = dlsym(RTLD_NEXT, "__lxstat64");
-	real.__fxstat64 = dlsym(RTLD_NEXT, "__fxstat64");
-#endif
-
-	real.populated = 1;
-}
+#include "real.h"
 
 /* ------------------------------------------------------------------ */
 /* open / open64                                                       */
@@ -257,6 +198,15 @@ DIR *opendir(const char *name)
 {
 	real_populate();
 
+	DIR *sqfs_dir = sqfs_opendir(name);
+	if (sqfs_dir != NULL) {
+		log_hook(__func__, "path=\"%s\", sqfs_dir=0x%p\n",
+			 name, (void *)sqfs_dir);
+		return sqfs_dir;
+	}
+	if (errno != ENOENT)
+		return NULL;
+
 	log_hook(__func__, "path=\"%s\"\n", name);
 
 	return real.opendir(name);
@@ -265,6 +215,15 @@ DIR *opendir(const char *name)
 DIR *opendir64(const char *name)
 {
 	real_populate();
+
+	DIR *sqfs_dir = sqfs_opendir(name);
+	if (sqfs_dir != NULL) {
+		log_hook(__func__, "path=\"%s\", sqfs_dir=0x%p\n",
+			 name, (void *)sqfs_dir);
+		return sqfs_dir;
+	}
+	if (errno != ENOENT)
+		return NULL;
 
 	log_hook(__func__, "path=\"%s\"\n", name);
 
@@ -323,6 +282,16 @@ int readdir64_r(DIR *dirp, struct dirent64 *entry, struct dirent64 **result)
 int closedir(DIR *dirp)
 {
 	real_populate();
+
+	int saved_errno = errno;
+	int sqfs_ret = sqfs_closedir(dirp);
+	if (sqfs_ret == 0) {
+		log_hook(__func__, "dir=0x%p, sqfs\n", (void *)dirp);
+		return 0;
+	}
+	if (errno != saved_errno)
+		return -1;
+	errno = saved_errno;
 
 	log_hook(__func__, "dir=0x%p\n", (void *)dirp);
 
