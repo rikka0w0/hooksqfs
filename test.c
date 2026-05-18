@@ -3,6 +3,7 @@
 #include "logging.h"
 
 #include <stdlib.h>
+#include <limits.h>
 
 static PtrHashMap g_pxMapDIR = NULL;
 static PtrHashMap* qwq = &g_pxMapDIR;
@@ -53,9 +54,14 @@ static void map_test(void) {
 }
 
 static void test_is_under_hooksqfs_prefix(void) {
+	const char *prefix = getenv("HOOKSQFS_PREFIX");
+	if (prefix == NULL) {
+		prefix = "/hook";
+	}
 	const char *paths[] = {
 		"/other/../hook/somefile",
 		"/hook/somepath/../somefile",
+		"/hook/somepath/somefile",
 		"/hook/somefile",
 		"/hook/",
 		"/hook",
@@ -64,8 +70,14 @@ static void test_is_under_hooksqfs_prefix(void) {
 	};
 
 	for (int i = 0; paths[i] != NULL; i++) {
-		log_msg("is_under_hooksqfs_prefix('%s'): %s\n", paths[i],
-				is_under_hooksqfs_prefix(paths[i]) ? "true" : "false");
+		log_msg("path_is_under_prefix('%s'): %s\n", paths[i],
+				path_is_under_prefix(prefix, paths[i]) ? "true" : "false");
+		char rel[PATH_MAX];
+		if (path_relative_to_root(prefix, paths[i], rel, sizeof(rel))) {
+			log_msg("  relative: %s\n", rel);
+		} else {
+			log_msg("  not relative to root\n");
+		}
 	}
 }
 
