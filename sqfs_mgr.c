@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include <sqfs/compressor.h>
 #include <sqfs/data_reader.h>
@@ -22,12 +23,26 @@
 #include "real.h"
 
 #include "uthash.h"
+#include "utlist.h"
 
 void sqfs_util_log_failure(const char* func, int err);
+
+struct SqfsDirEntryNode {
+	sqfs_inode_generic_t *inode;
+	struct dirent dirent;
+	struct SqfsDirEntryNode *next;
+};
 
 struct DirMapEntry {
 	DIR *key; // The underlying DIR* pointer.
 	sqfs_dir_reader_t *dir_reader;
+	bool is_real_dir;
+	struct SqfsDirEntryNode* dir_entry_list;
+
+	// For readdir
+	struct SqfsDirEntryNode *dir_entry_current;
+	bool dir_entry_list_reached_end;
+
 	UT_hash_handle hh;
 };
 
@@ -314,6 +329,59 @@ error_and_free_inode:
 	return -1;
 }
 
+static void free_sqfs_dir_entry_list(struct SqfsDirEntryNode **dir_entry_list) {
+	struct SqfsDirEntryNode *current = *dir_entry_list;
+	while (current != NULL) {
+		struct SqfsDirEntryNode *next = current->next;
+		sqfs_free(current->inode);
+		free(current);
+		current = next;
+	}
+	*dir_entry_list = NULL;
+}
+
+static void enumerate_dir(sqfs_dir_reader_t *dir_reader, struct SqfsDirEntryNode **dir_entry_list) {
+	while (true) {
+		sqfs_dir_entry_t *dir_entry = NULL;
+		int ret = sqfs_dir_reader_read(dir_reader, &dir_entry);
+		if (ret > 0)
+			return;
+		if (ret < 0) {
+			sqfs_util_log_failure("sqfs_dir_reader_read", ret);
+			break;
+		}
+
+		struct SqfsDirEntryNode *node = malloc(sizeof(struct SqfsDirEntryNode));
+		if (node == NULL) {
+			log_msg("  malloc failed for dir entry\n");
+			sqfs_free(dir_entry);
+			break;
+		}
+
+		node->inode = NULL;
+		ret = sqfs_dir_reader_get_inode(dir_reader, &node->inode);
+		if (ret != 0) {
+			log_msg("  %.*s size=? head16=<inode error %d>\n",
+				(int)dir_entry->size + 1, dir_entry->name, ret);
+			sqfs_free(dir_entry);
+			break;
+		}
+		
+		node->dirent.d_ino = node->inode->base.inode_number;
+		node->dirent.d_off = 0; // Not used
+		node->dirent.d_reclen = sizeof(struct dirent);
+		node->dirent.d_type = (node->inode->base.type == SQFS_INODE_DIR ||
+				       node->inode->base.type == SQFS_INODE_EXT_DIR) ? DT_DIR : DT_REG;
+		memcpy(node->dirent.d_name, dir_entry->name, dir_entry->size + 1);
+		node->dirent.d_name[dir_entry->size + 1] = '\0';
+
+		LL_APPEND(*dir_entry_list, node);
+		// log_msg(" inode %d -> %s\n", node->dirent.d_ino, node->dirent.d_name);
+	}
+
+	free_sqfs_dir_entry_list(dir_entry_list);
+}
+
 DIR * sqfs_opendir(const char *name) {
 	const char *prefix = sqfs_mgr_get_prefix();
 	const char *sqfs_path = getenv("HOOKSQFS_FILE");
@@ -362,6 +430,7 @@ DIR * sqfs_opendir(const char *name) {
 	}
 	if (ret != 0) {
 		sqfs_util_log_failure("sqfs_dir_reader_find_by_path", ret);
+		log_hook(__func__, "sqfs_dir_reader_find_by_path(\"%s\") failed: %d\n", relative, ret);
 		errno = errno_from_sqfs(ret);
 		goto out;
 	}
@@ -379,7 +448,12 @@ DIR * sqfs_opendir(const char *name) {
 		goto out;
 	}
 
-	DIR *underlying_dir = create_backing_dir();
+	bool is_real_dir = true;
+	DIR *underlying_dir = real.opendir(name);
+	if (underlying_dir == NULL) {
+		underlying_dir = create_backing_dir();
+		is_real_dir = false;
+	}
 	if (underlying_dir == NULL)
 		goto out;
 
@@ -392,7 +466,13 @@ DIR * sqfs_opendir(const char *name) {
 
 	dir_entry->key = underlying_dir;
 	dir_entry->dir_reader = dir_reader;
+	dir_entry->is_real_dir = is_real_dir;
+	dir_entry->dir_entry_list = NULL;
+	dir_entry->dir_entry_current = NULL;
+	dir_entry->dir_entry_list_reached_end = false;
 	HASH_ADD_PTR(g_xSqfsMgr.dir_map, key, dir_entry);
+
+	enumerate_dir(dir_reader, &dir_entry->dir_entry_list);
 
 	sqfs_free(inode);
 	return underlying_dir;
@@ -407,27 +487,55 @@ out:
 	return NULL;
 }
 
+struct dirent *sqfs_readdir(DIR *dirp) {
+	struct DirMapEntry *found = NULL;
+
+	HASH_FIND_PTR(g_xSqfsMgr.dir_map, &dirp, found);
+
+	// If the given dirp is not in our map,
+	// it must be a real directory that sqfs_opendir didn't open, return.
+	if (found == NULL)
+		return NULL;
+
+	if (found->is_real_dir) {
+		struct dirent *result = real.readdir(dirp);
+		if (result != NULL)
+			return result;
+	}
+
+	if (found->dir_entry_list_reached_end)
+		return NULL;
+
+	if (found->dir_entry_current == NULL)
+		found->dir_entry_current = found->dir_entry_list;
+
+	if (found->dir_entry_current == NULL)
+		return NULL;
+
+	struct dirent *result = &found->dir_entry_current->dirent;
+	found->dir_entry_current = found->dir_entry_current->next;
+
+	if (found->dir_entry_current == NULL)
+		found->dir_entry_list_reached_end = true;
+
+	log_msg(" inode %d -> %s\n", result->d_ino, result->d_name);
+	return result;
+}
+
 int sqfs_closedir(DIR *dir) {
 	struct DirMapEntry *found = NULL;
-	int ret = 0;
 
 	HASH_FIND_PTR(g_xSqfsMgr.dir_map, &dir, found);
 	if (found == NULL)
 		return -1;
 
 	HASH_DEL(g_xSqfsMgr.dir_map, found);
-
 	sqfs_destroy(found->dir_reader);
-
-	if (real.closedir == NULL) {
-		errno = ENOSYS;
-		ret = -1;
-	} else {
-		ret = real.closedir(found->key);
-	}
-
+	DIR* underlying_dir = found->key;
+	free_sqfs_dir_entry_list(&found->dir_entry_list);
 	free(found);
-	return ret;
+
+	return real.closedir(underlying_dir);
 }
 
 

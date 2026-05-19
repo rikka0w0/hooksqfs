@@ -1,3 +1,0 @@
-WARNING: No map specified! Defaulting to c1m1_hotel
-Server will auto-restart if there is a crash.
-Mon May 18 02:48:02 AEST 2026: Server Quit

@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -243,7 +244,12 @@ struct dirent *readdir(DIR *dirp)
 {
 	real_populate();
 
-	struct dirent * entry = real.readdir(dirp);
+	struct dirent *entry = sqfs_readdir(dirp);
+	if (entry != NULL) {
+		return entry;
+	}
+
+	entry = real.readdir(dirp);
 	log_hook(__func__, "%s\n", entry ? entry->d_name : "(null)");
 
 	return entry;
@@ -355,6 +361,7 @@ int __fxstat(int ver, int fd, struct stat *buf)
 	return real.__fxstat(ver, fd, buf);
 }
 
+#undef __USE_LARGEFILE64
 #ifdef __USE_LARGEFILE64
 int __xstat64(int ver, const char *pathname, struct stat64 *buf)
 {
