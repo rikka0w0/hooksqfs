@@ -1,3 +1,9 @@
 [submodule "uthash"]
 	path = uthash
 	url = https://github.com/troydhanson/uthash.git
+[submodule "edk2-subhook"]
+	path = edk2-subhook
+	url = https://github.com/savushkin-r-d/subhook.git
+[submodule "subhook"]
+	path = subhook
+	url = https://github.com/savushkin-r-d/subhook.git
