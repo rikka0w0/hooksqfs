@@ -18,14 +18,21 @@ ifneq ($(wildcard $(CURDIR)/libsquashfs-root),)
 endif
 endif
 
-LDLIBS = $(shell $(PKG_CONFIG_CMD) --cflags --libs libsquashfs1)
+LDLIBS = $(shell $(PKG_CONFIG_CMD) --cflags --libs libsquashfs1) \
+			-Lfunchook/build-x86_$(BITS) -lfunchook
 
-INCLUDES := -I$(CURDIR)/uthash/include
+INCLUDES := -I$/uthash/include \
+			-I$/funchook/include
 
 CFLAGS ?= -fPIC -O2 -Wall -Wextra
 CFLAGS_LIB = $(CFLAGS) -shared
 LDFLAGS ?= -Wl,--no-as-needed
 LDFLAGS_LIB = $(LDFLAGS) -ldl
+LDFLAGS_TEST = $(LDFLAGS) -Wl,-rpath,funchook/build-x86_$(BITS)
+
+ifeq ($(BITS),32)
+  LDFLAGS_TEST += -Wl,-rpath,libsquashfs-root/usr/lib/i386-linux-gnu
+endif
 
 SOURCES := hooksqfs.c logging.c utils.c real.c sqfs_mgr.c
 
@@ -33,7 +40,32 @@ libhooksqfs.so: $(SOURCES)
 	gcc $(ARCH_CFLAGS) $(CFLAGS_LIB) -o $@ $(SOURCES) $(INCLUDES) $(LDFLAGS_LIB) $(LDLIBS)
 
 test: $(SOURCES) test.c
-	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) test.c $(INCLUDES) $(LDLIBS)
+	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) test.c $(INCLUDES) $(LDFLAGS_TEST) $(LDLIBS)
+
+build-funchook64:
+	rm -rf funchook/build-x86_64/ && mkdir -p funchook/build-x86_64/
+	cmake -S funchook -B funchook/build-x86_64 \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+		-DFUNCHOOK_INSTALL=OFF \
+		-DFUNCHOOK_CPU=x86 \
+		-DFUNCHOOK_BUILD_TESTS=OFF
+	cmake --build funchook/build-x86_64 -j"$(nproc)"
+
+build-funchook32:
+	rm -rf funchook/build-x86_32/ && mkdir -p funchook/build-x86_32/
+	cmake -S funchook -B funchook/build-x86_32 \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+		-DFUNCHOOK_INSTALL=OFF \
+		-DFUNCHOOK_CPU=x86 \
+		-DFUNCHOOK_BUILD_TESTS=OFF \
+		-DCMAKE_C_FLAGS="-m32" \
+		-DCMAKE_CXX_FLAGS="-m32" \
+		-DCMAKE_ASM_FLAGS="-m32" \
+		-DCMAKE_EXE_LINKER_FLAGS="-m32" \
+		-DCMAKE_SHARED_LINKER_FLAGS="-m32"
+	cmake --build funchook/build-x86_32 -j"$$(nproc)"
 
 # Ubuntu x86_64 does not have 32-bit libsquashfs-dev, so we need to install them manually
 get-libsquashfs-i386:
