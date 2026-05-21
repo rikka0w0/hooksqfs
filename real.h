@@ -5,9 +5,11 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
-struct RealFunctions {
+struct LibcFunctions {
 	int (*open)(const char *pathname, int flags, ...);
 	int (*open64)(const char *pathname, int flags, ...);
+	ssize_t (*write)(int fd, const void *buf, size_t count);
+	int (*close)(int fd);
 	int (*openat)(int dirfd, const char *pathname, int flags, ...);
 	int (*openat64)(int dirfd, const char *pathname, int flags, ...);
 	FILE *(*fopen)(const char *pathname, const char *mode);
@@ -20,6 +22,9 @@ struct RealFunctions {
 	int (*readdir_r)(DIR *dirp, struct dirent *entry, struct dirent **result);
 	int (*readdir64_r)(DIR *dirp, struct dirent64 *entry, struct dirent64 **result);
 	int (*closedir)(DIR *dirp);
+	int (*scandir)(const char *dirp, struct dirent ***namelist,
+		       int (*filter)(const struct dirent *),
+		       int (*compar)(const struct dirent **, const struct dirent **));
 	int (*access)(const char *pathname, int mode);
 	int (*faccessat)(int dirfd, const char *pathname, int mode, int flags);
 	int (*__xstat)(int ver, const char *pathname, struct stat *buf);
@@ -32,7 +37,9 @@ struct RealFunctions {
 #endif
 };
 
-extern struct RealFunctions real;
-void real_populate(void);
+extern struct LibcFunctions g_LibcFuncs;
+extern struct LibcFunctions g_xTrampoline;
+
+void vPopulateLibcFuncPtrs(void);
 
 #endif /* REAL_H */

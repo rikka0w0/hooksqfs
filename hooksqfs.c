@@ -1,23 +1,25 @@
 #define _GNU_SOURCE
 
-#include <dlfcn.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <errno.h>
+
+#include "funchook.h"
 #include "logging.h"
 #include "sqfs_mgr.h"
 #include "real.h"
 
+static funchook_t *hooks_funchook;
+
 /* ------------------------------------------------------------------ */
 /* open / open64                                                       */
 /* ------------------------------------------------------------------ */
-
+/*
 static int flags_need_mode(int flags)
 {
 #ifdef O_TMPFILE
@@ -29,8 +31,6 @@ static int flags_need_mode(int flags)
 
 int open(const char *pathname, int flags, ...)
 {
-	real_populate();
-
 	mode_t mode = 0;
 	int has_mode = flags_need_mode(flags);
 
@@ -52,7 +52,7 @@ int open(const char *pathname, int flags, ...)
 		log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o\n",
 				pathname , flags, mode);
 
-		return real.open(pathname, flags, mode);
+		return g_LibcFuncs.open(pathname, flags, mode);
 	} else {
 		int sqfs_fd = sqfs_open(pathname, flags);
 		if (sqfs_fd >= 0) {
@@ -66,16 +66,19 @@ int open(const char *pathname, int flags, ...)
 		log_hook(__func__, "path=\"%s\", flags=0x%x\n",
 				pathname , flags);
 
-		return real.open(pathname, flags);
+		return g_LibcFuncs.open(pathname, flags);
 	}
 }
 
 int open64(const char *pathname, int flags, ...)
 {
-	real_populate();
-
 	mode_t mode = 0;
 	int has_mode = flags_need_mode(flags);
+
+	if (g_LibcFuncs.open64 == NULL) {
+		errno = ENOSYS;
+		return -1;
+	}
 
 	if (has_mode) {
 		va_list ap;
@@ -95,7 +98,7 @@ int open64(const char *pathname, int flags, ...)
 		log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o\n",
 				pathname , flags, mode);
 
-		return real.open64(pathname, flags, mode);
+		return g_LibcFuncs.open64(pathname, flags, mode);
 	} else {
 		int sqfs_fd = sqfs_open(pathname, flags);
 		if (sqfs_fd >= 0) {
@@ -109,286 +112,150 @@ int open64(const char *pathname, int flags, ...)
 		log_hook(__func__, "path=\"%s\", flags=0x%x\n",
 				pathname , flags);
 
-		return real.open64(pathname, flags);
+		return g_LibcFuncs.open64(pathname, flags);
 	}
 }
+*/
 
 /* ------------------------------------------------------------------ */
-/* openat / openat64                                                   */
+/* scandir                                                            */
 /* ------------------------------------------------------------------ */
 
-int openat(int dirfd, const char *pathname, int flags, ...)
+/*
+int scandir(const char *dirp, struct dirent ***namelist,
+	    int (*filter)(const struct dirent *),
+	    int (*compar)(const struct dirent **, const struct dirent **))
 {
-	real_populate();
-
-	mode_t mode = 0;
-	int has_mode = flags_need_mode(flags);
-
-	if (has_mode) {
-		va_list ap;
-		va_start(ap, flags);
-		mode = (mode_t)va_arg(ap, int);
-		va_end(ap);
-
-log_hook(__func__, "dirfd=%d, path=\"%s\", flags=0x%x, mode=%04o\n",
-				dirfd, pathname , flags, mode);
-
-		return real.openat(dirfd, pathname, flags, mode);
-	} else {
-log_hook(__func__, "dirfd=%d, path=\"%s\", flags=0x%x\n",
-				dirfd, pathname , flags);
-
-		return real.openat(dirfd, pathname, flags);
-	}
-}
-
-int openat64(int dirfd, const char *pathname, int flags, ...)
-{
-	real_populate();
-
-	mode_t mode = 0;
-	int has_mode = flags_need_mode(flags);
-
-	if (has_mode) {
-		va_list ap;
-		va_start(ap, flags);
-		mode = (mode_t)va_arg(ap, int);
-		va_end(ap);
-
-log_hook(__func__, "dirfd=%d, path=\"%s\", flags=0x%x, mode=%04o\n",
-				dirfd, pathname , flags, mode);
-
-		return real.openat64(dirfd, pathname, flags, mode);
-	} else {
-log_hook(__func__, "dirfd=%d, path=\"%s\", flags=0x%x\n",
-				dirfd, pathname , flags);
-
-		return real.openat64(dirfd, pathname, flags);
-	}
-}
-
-/* ------------------------------------------------------------------ */
-/* fopen / fopen64                                                     */
-/* ------------------------------------------------------------------ */
-
-FILE *fopen(const char *pathname, const char *mode)
-{
-	real_populate();
-
-	log_hook(__func__, "path=\"%s\", mode=\"%s\"\n",
-			pathname, mode );
-
-	return real.fopen(pathname, mode);
-}
-
-FILE *fopen64(const char *pathname, const char *mode)
-{
-	real_populate();
-
-	log_hook(__func__, "path=\"%s\", mode=\"%s\"\n",
-			pathname, mode);
-
-	return real.fopen64(pathname, mode);
-}
-
-/* ------------------------------------------------------------------ */
-/* opendir/readdir/closedir                                            */
-/* ------------------------------------------------------------------ */
-
-DIR *opendir(const char *name)
-{
-	real_populate();
-
-	DIR *sqfs_dir = sqfs_opendir(name);
-	if (sqfs_dir != NULL) {
-		log_hook(__func__, "path=\"%s\", sqfs_dir=0x%p\n",
-			 name, (void *)sqfs_dir);
-		return sqfs_dir;
-	}
-	if (errno != ENOENT)
-		return NULL;
-
-	log_hook(__func__, "path=\"%s\"\n", name);
-
-	return real.opendir(name);
-}
-
-DIR *opendir64(const char *name)
-{
-	real_populate();
-
-	DIR *sqfs_dir = sqfs_opendir(name);
-	if (sqfs_dir != NULL) {
-		log_hook(__func__, "path=\"%s\", sqfs_dir=0x%p\n",
-			 name, (void *)sqfs_dir);
-		return sqfs_dir;
-	}
-	if (errno != ENOENT)
-		return NULL;
-
-	log_hook(__func__, "path=\"%s\"\n", name);
-
-	return real.opendir64(name);
-}
-
-DIR *fdopendir(int fd)
-{
-	real_populate();
-
-	log_hook(__func__, "fd=%d\n", fd);
-
-	return real.fdopendir(fd);
-}
-
-struct dirent *readdir(DIR *dirp)
-{
-	real_populate();
-
-	struct dirent *entry = sqfs_readdir(dirp);
-	if (entry != NULL) {
-		return entry;
-	}
-
-	entry = real.readdir(dirp);
-	log_hook(__func__, "%s\n", entry ? entry->d_name : "(null)");
-
-	return entry;
-}
-
-struct dirent64 *readdir64(DIR *dirp)
-{
-	real_populate();
-
-	struct dirent64 * entry = real.readdir64(dirp);
-	log_hook(__func__, "%s\n", entry ? entry->d_name : "(null)");
-
-	return entry;
-}
-
-int readdir_r(DIR *dirp, struct dirent *entry, struct dirent **result)
-{
-	real_populate();
-
-	log_hook(__func__, "dir=0x%p, entry=0x%p\n",
-			(void *)dirp, (void *)entry);
-
-	return real.readdir_r(dirp, entry, result);
-}
-
-int readdir64_r(DIR *dirp, struct dirent64 *entry, struct dirent64 **result)
-{
-	real_populate();
-
-	log_hook(__func__, "dir=0x%p, entry=0x%p\n",
-			(void *)dirp, (void *)entry);
-
-	return real.readdir64_r(dirp, entry, result);
-}
-
-int closedir(DIR *dirp)
-{
-	real_populate();
-
+	int ret = g_LibcFuncs.scandir(dirp, namelist, filter, compar);
 	int saved_errno = errno;
-	int sqfs_ret = sqfs_closedir(dirp);
-	if (sqfs_ret == 0) {
-		log_hook(__func__, "dir=0x%p, sqfs\n", (void *)dirp);
-		return 0;
+
+	log_msg("scandir: path=\"%s\", ret=%d\n", dirp, ret);
+	if (ret > 0 && *namelist != NULL) {
+		for (int i = 0; i < ret; i++) {
+			struct dirent *entry = (*namelist)[i];
+
+			log_msg("scandir: [%d] name=\"%s\", type=%u, ino=%llu\n",
+				i,
+				entry ? entry->d_name : "(null)",
+				entry ? (unsigned int)entry->d_type : 0,
+				entry ? (unsigned long long)entry->d_ino : 0);
+		}
+	} else if (ret == 0) {
+		log_msg("scandir: <empty>\n");
+	} else {
+		log_msg("scandir: <unavailable>\n");
 	}
-	if (errno != saved_errno)
-		return -1;
+
 	errno = saved_errno;
+	return ret;
+}
+*/
 
-	log_hook(__func__, "dir=0x%p\n", (void *)dirp);
+/* ------------------------------------------------------------------ */
+/* funchook install / uninstall                                       */
+/* ------------------------------------------------------------------ */
 
-	return real.closedir(dirp);
+static int prepare_hook(const char *name, void **target, void *hook)
+{
+	int rv = funchook_prepare(hooks_funchook, target, hook);
+	if (rv != 0) {
+		log_msg("funchook_prepare(%s) failed: %s\n",
+			name, funchook_error_message(hooks_funchook));
+		return -1;
+	}
+
+	return 0;
+}
+
+static void uninstall_hooks(void)
+{
+	int rv;
+
+	if (hooks_funchook == NULL)
+		return;
+
+	rv = funchook_uninstall(hooks_funchook, 0);
+	if (rv != 0) {
+		log_msg("funchook_uninstall failed: %s\n",
+			funchook_error_message(hooks_funchook));
+	}
+
+	rv = funchook_destroy(hooks_funchook);
+	if (rv != 0)
+		log_msg("funchook_destroy failed\n");
+
+	hooks_funchook = NULL;
+	g_LibcFuncs.opendir = g_xTrampoline.opendir;
+	g_LibcFuncs.readdir = g_xTrampoline.readdir;
+	g_LibcFuncs.closedir = g_xTrampoline.closedir;
+	g_LibcFuncs.access = g_xTrampoline.access;
+	g_LibcFuncs.__xstat = g_xTrampoline.__xstat;
+}
+
+static void install_hooks(void)
+{
+	int rv;
+
+	if (g_LibcFuncs.opendir == NULL || g_LibcFuncs.readdir == NULL ||
+	    g_LibcFuncs.closedir == NULL || g_LibcFuncs.access == NULL ||
+	    g_LibcFuncs.__xstat == NULL) {
+		log_msg("hook install failed: missing real function\n");
+		return;
+	}
+
+	g_xTrampoline.opendir = g_LibcFuncs.opendir;
+	g_xTrampoline.readdir = g_LibcFuncs.readdir;
+	g_xTrampoline.closedir = g_LibcFuncs.closedir;
+	g_xTrampoline.access = g_LibcFuncs.access;
+	g_xTrampoline.__xstat = g_LibcFuncs.__xstat;
+
+	hooks_funchook = funchook_create();
+	if (hooks_funchook == NULL) {
+		log_msg("funchook_create failed\n");
+		return;
+	}
+
+	if (prepare_hook("opendir", (void **)&g_LibcFuncs.opendir, (void *)sqfs_opendir) != 0 ||
+	    prepare_hook("readdir", (void **)&g_LibcFuncs.readdir, (void *)sqfs_readdir) != 0 ||
+	    prepare_hook("closedir", (void **)&g_LibcFuncs.closedir, (void *)sqfs_closedir) != 0 ||
+	    prepare_hook("access", (void **)&g_LibcFuncs.access, (void *)sqfs_access) != 0 ||
+	    prepare_hook("__xstat", (void **)&g_LibcFuncs.__xstat, (void *)sqfs_xstat) != 0) {
+		uninstall_hooks();
+		return;
+	}
+
+	rv = funchook_install(hooks_funchook, 0);
+	if (rv != 0) {
+		log_msg("funchook_install failed: %s\n",
+			funchook_error_message(hooks_funchook));
+		uninstall_hooks();
+		return;
+	}
+
+	log_msg("hooks installed: opendir=%p readdir=%p closedir=%p access=%p __xstat=%p\n",
+		(void *)g_LibcFuncs.opendir, (void *)g_LibcFuncs.readdir,
+		(void *)g_LibcFuncs.closedir, (void *)g_LibcFuncs.access,
+		(void *)g_LibcFuncs.__xstat);
 }
 
 /* ------------------------------------------------------------------ */
-/* access / faccessat                                                  */
+/* so constructor / destructor                                        */
 /* ------------------------------------------------------------------ */
 
-int access(const char *pathname, int mode)
+__attribute__((constructor))
+static void hooksqfs_init(void)
 {
-	real_populate();
+	// This has to be the first step
+	vPopulateLibcFuncPtrs();
 
-	log_hook(__func__, "path=\"%s\", mode=0x%x\n",
-		pathname, mode);
+	sqfs_mgr_load_image();
 
-	return real.access(pathname, mode);
+	// This has to be the last step
+	install_hooks();
 }
 
-int faccessat(int dirfd, const char *pathname, int mode, int flags)
+__attribute__((destructor))
+static void hooksqfs_fini(void)
 {
-	real_populate();
-
-	log_hook(__func__, "dirfd=%d, path=\"%s\", mode=0x%x, flags=0x%x\n",
-			dirfd, pathname, mode, flags);
-
-	return real.faccessat(dirfd, pathname, mode, flags);
+	uninstall_hooks();
 }
-
-/* ------------------------------------------------------------------ */
-/* glibc stat family, important for 32-bit x86                         */
-/* ------------------------------------------------------------------ */
-
-int __xstat(int ver, const char *pathname, struct stat *buf)
-{
-	real_populate();
-
-	log_hook(__func__, "ver=%d, path=\"%s\"\n",
-			ver, pathname ? pathname : "(null)");
-
-	return real.__xstat(ver, pathname, buf);
-}
-
-int __lxstat(int ver, const char *pathname, struct stat *buf)
-{
-	real_populate();
-
-	log_hook(__func__, "ver=%d, path=\"%s\"\n",
-			ver, pathname ? pathname : "(null)");
-
-	return real.__lxstat(ver, pathname, buf);
-}
-
-int __fxstat(int ver, int fd, struct stat *buf)
-{
-	real_populate();
-
-	log_hook(__func__, "ver=%d, fd=%d\n", ver, fd);
-
-	return real.__fxstat(ver, fd, buf);
-}
-
-#undef __USE_LARGEFILE64
-#ifdef __USE_LARGEFILE64
-int __xstat64(int ver, const char *pathname, struct stat64 *buf)
-{
-	real_populate();
-
-	log_hook(__func__, "ver=%d, path=\"%s\"\n",
-			ver, pathname ? pathname : "(null)");
-
-	return real.__xstat64(ver, pathname, buf);
-}
-
-int __lxstat64(int ver, const char *pathname, struct stat64 *buf)
-{
-	real_populate();
-
-	log_hook(__func__, "ver=%d, path=\"%s\"\n",
-			ver, pathname ? pathname : "(null)");
-
-	return real.__lxstat64(ver, pathname, buf);
-}
-
-int __fxstat64(int ver, int fd, struct stat64 *buf)
-{
-	real_populate();
-
-	log_hook(__func__, "ver=%d, fd=%d\n", ver, fd);
-
-	return real.__fxstat64(ver, fd, buf);
-}
-#endif

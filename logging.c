@@ -1,13 +1,48 @@
 #define _GNU_SOURCE
 
 #include "logging.h"
+#include "real.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/syscall.h>
 #include <unistd.h>
+
+#define WRITE_LOG_TO_FILE 1
+
+#if WRITE_LOG_TO_FILE
+static void write_log_file(const char *buf, size_t len)
+{
+	if (g_LibcFuncs.open == NULL || g_LibcFuncs.write == NULL || g_LibcFuncs.close == NULL)
+		return;
+
+	int fd = g_LibcFuncs.open("/tmp/log.txt",
+				   O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
+				   0644);
+	if (fd < 0)
+		return;
+
+	const char *p = buf;
+	while (len > 0) {
+		ssize_t written = g_LibcFuncs.write(fd, p, len);
+		if (written < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		if (written == 0)
+			break;
+
+		p += written;
+		len -= (size_t)written;
+	}
+
+	g_LibcFuncs.close(fd);
+}
+#endif
 
 static int should_log(const char *func_name)
 {
@@ -66,7 +101,11 @@ void log_hook(const char *func_name, const char *fmt, ...)
 	if (total > (int)sizeof(buf))
 		total = sizeof(buf);
 
-	syscall(SYS_write, STDERR_FILENO, buf, (size_t)total);
+#if WRITE_LOG_TO_FILE
+	write_log_file(buf, (size_t)total);
+#else
+	fputs(buf, stdout);
+#endif
 }
 
 void log_msg(const char *fmt, ...)
@@ -84,5 +123,9 @@ void log_msg(const char *fmt, ...)
 	if (n > (int)sizeof(buf))
 		n = sizeof(buf);
 
-	syscall(SYS_write, STDERR_FILENO, buf, (size_t)n);
+#if WRITE_LOG_TO_FILE
+	write_log_file(buf, (size_t)n);
+#else
+	fputs(buf, stdout);
+#endif
 }

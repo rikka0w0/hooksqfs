@@ -133,17 +133,23 @@ static void uninstall_opendir_hook(void)
 
 int main(void)
 {
-	DIR *d;
+	struct dirent **entries;
+	int i;
+	int n;
 
 	if (install_opendir_hook() != 0) {
 		return 1;
 	}
 
-	d = opendir("/tmp");
-	fprintf(stderr, "[test] opendir returned %p\n", (void *)d);
+	entries = NULL;
+	n = scandir("/tmp", &entries, NULL, NULL);
+	fprintf(stderr, "[test] scandir returned %d\n", n);
 
-	if (d != NULL) {
-		closedir(d);
+	if (n >= 0) {
+		for (i = 0; i < n; i++) {
+			free(entries[i]);
+		}
+		free(entries);
 	}
 
 	uninstall_opendir_hook();

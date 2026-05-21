@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <stdlib.h>
 #include <stdbool.h>
 #include <dirent.h>
@@ -5,9 +7,12 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <execinfo.h>
 
 #include <sqfs/compressor.h>
 #include <sqfs/data_reader.h>
@@ -24,6 +29,25 @@
 
 #include "uthash.h"
 #include "utlist.h"
+
+void print_callstack(void) {
+    void *buffer[64];
+
+    int n = backtrace(buffer, 64);
+    char **symbols = backtrace_symbols(buffer, n);
+
+    if (symbols == NULL) {
+        perror("backtrace_symbols");
+        return;
+    }
+
+    log_msg("Call stack:\n");
+    for (int i = 0; i < n; i++) {
+        log_msg("  #%d %s\n", i, symbols[i]);
+    }
+
+    free(symbols);
+}
 
 void sqfs_util_log_failure(const char* func, int err);
 
@@ -235,6 +259,213 @@ bool sqfs_mgr_load_image(void)
 	return true;
 }
 
+static int sqfs_check_path_then_convert(const char *pathname, char* relative_out, size_t len)
+{
+	const char *prefix = sqfs_mgr_get_prefix();
+	const char *sqfs_path = getenv("HOOKSQFS_FILE");
+
+	if (pathname == NULL) {
+		return EFAULT;
+	}
+
+	if (!path_is_under_prefix(prefix, pathname)) {
+		return -ENOENT;
+	}
+
+	if (path_equals_normalized(pathname, sqfs_path)) {
+		return ENOENT;
+	}
+
+	if (!relative_out || !len) {
+		return 0;
+	}
+
+	if (!path_relative_to_root(prefix, pathname, relative_out, len)) {
+		return ENOENT;
+	}
+
+	return 0;
+}
+
+static int sqfs_find_inode(const char *relative, sqfs_inode_generic_t **inode_out)
+{
+	if (inode_out == NULL) {
+		errno = EFAULT;
+		return -1;
+	}
+	*inode_out = NULL;
+
+	sqfs_dir_reader_t *dir_reader = sqfs_dir_reader_create(
+		&g_xSqfsMgr.super, g_xSqfsMgr.compressor, g_xSqfsMgr.file, 0);
+	if (dir_reader == NULL) {
+		errno = ENOMEM;
+		return -1;
+	}
+
+	sqfs_inode_generic_t *inode = NULL;
+	int ret;
+	if (relative[0] == '\0') {
+		ret = sqfs_dir_reader_get_root_inode(dir_reader, &inode);
+	} else {
+		ret = sqfs_dir_reader_find_by_path(dir_reader, NULL, relative, &inode);
+	}
+
+	sqfs_destroy(dir_reader);
+	if (ret != 0) {
+		sqfs_util_log_failure("sqfs_dir_reader_find_by_path", ret);
+		errno = errno_from_sqfs(ret);
+		return -1;
+	}
+
+	*inode_out = inode;
+	return 0;
+}
+
+static mode_t sqfs_inode_mode(const sqfs_inode_generic_t *inode)
+{
+	mode_t mode = inode->base.mode & 07777;
+
+	switch (inode->base.type) {
+	case SQFS_INODE_DIR:
+	case SQFS_INODE_EXT_DIR:
+		return mode | S_IFDIR;
+	case SQFS_INODE_FILE:
+	case SQFS_INODE_EXT_FILE:
+		return mode | S_IFREG;
+	case SQFS_INODE_SLINK:
+	case SQFS_INODE_EXT_SLINK:
+		return mode | S_IFLNK;
+	case SQFS_INODE_BDEV:
+	case SQFS_INODE_EXT_BDEV:
+		return mode | S_IFBLK;
+	case SQFS_INODE_CDEV:
+	case SQFS_INODE_EXT_CDEV:
+		return mode | S_IFCHR;
+	case SQFS_INODE_FIFO:
+	case SQFS_INODE_EXT_FIFO:
+		return mode | S_IFIFO;
+	case SQFS_INODE_SOCKET:
+	case SQFS_INODE_EXT_SOCKET:
+		return mode | S_IFSOCK;
+	default:
+		return mode;
+	}
+}
+
+static nlink_t sqfs_inode_nlink(const sqfs_inode_generic_t *inode)
+{
+	switch (inode->base.type) {
+	case SQFS_INODE_DIR:
+		return inode->data.dir.nlink;
+	case SQFS_INODE_EXT_DIR:
+		return inode->data.dir_ext.nlink;
+	case SQFS_INODE_EXT_FILE:
+		return inode->data.file_ext.nlink;
+	case SQFS_INODE_SLINK:
+		return inode->data.slink.nlink;
+	case SQFS_INODE_EXT_SLINK:
+		return inode->data.slink_ext.nlink;
+	case SQFS_INODE_BDEV:
+	case SQFS_INODE_CDEV:
+		return inode->data.dev.nlink;
+	case SQFS_INODE_EXT_BDEV:
+	case SQFS_INODE_EXT_CDEV:
+		return inode->data.dev_ext.nlink;
+	case SQFS_INODE_FIFO:
+	case SQFS_INODE_SOCKET:
+		return inode->data.ipc.nlink;
+	case SQFS_INODE_EXT_FIFO:
+	case SQFS_INODE_EXT_SOCKET:
+		return inode->data.ipc_ext.nlink;
+	default:
+		return 1;
+	}
+}
+
+static sqfs_u64 sqfs_inode_size(const sqfs_inode_generic_t *inode)
+{
+	sqfs_u64 size = 0;
+
+	switch (inode->base.type) {
+	case SQFS_INODE_FILE:
+	case SQFS_INODE_EXT_FILE:
+		if (sqfs_inode_get_file_size(inode, &size) != 0)
+			return 0;
+		return size;
+	case SQFS_INODE_DIR:
+		return inode->data.dir.size;
+	case SQFS_INODE_EXT_DIR:
+		return inode->data.dir_ext.size;
+	case SQFS_INODE_SLINK:
+		return inode->data.slink.target_size;
+	case SQFS_INODE_EXT_SLINK:
+		return inode->data.slink_ext.target_size;
+	default:
+		return 0;
+	}
+}
+
+static void sqfs_fill_stat(const sqfs_inode_generic_t *inode, struct stat *buf)
+{
+	sqfs_u64 size = sqfs_inode_size(inode);
+	time_t mtime = (time_t)inode->base.mod_time;
+
+	memset(buf, 0, sizeof(*buf));
+	buf->st_ino = inode->base.inode_number;
+	buf->st_mode = sqfs_inode_mode(inode);
+	buf->st_nlink = sqfs_inode_nlink(inode);
+	buf->st_uid = 0;
+	buf->st_gid = 0;
+	buf->st_size = (off_t)size;
+	buf->st_blksize = g_xSqfsMgr.super.block_size;
+	buf->st_blocks = (blkcnt_t)((size + 511) / 512);
+	buf->st_atim.tv_sec = mtime;
+	buf->st_mtim.tv_sec = mtime;
+	buf->st_ctim.tv_sec = mtime;
+}
+
+static bool sqfs_stat_impl(const char *relative, struct stat *buf)
+{
+	sqfs_inode_generic_t *inode = NULL;
+	if (sqfs_find_inode(relative, &inode) != 0) {
+		log_hook(__func__, "sqfs_stat could not find inode for path \"%s\"\n", relative);
+		return false;
+	}
+	// log_hook(__func__, "sqfs_stat found inode for path \"%s\"\n", relative);
+
+	sqfs_fill_stat(inode, buf);
+	sqfs_free(inode);
+	return true;
+}
+
+int sqfs_xstat(int ver, const char *pathname, struct stat *buf) {
+	// Try the real path first
+	if (g_LibcFuncs.__xstat(ver, pathname, buf) == 0) {
+		return 0;
+	}
+
+	// If the real path does not exist, try sqfs
+	char relative[PATH_MAX];
+	int ret = sqfs_check_path_then_convert(pathname, relative, sizeof(relative));
+	if (ret != 0) {
+		errno = ret;
+		return -1;
+	}
+
+	if (buf == NULL) {
+		errno = EFAULT;
+		return -1;
+	}
+
+	if (ver != 3) {
+		log_hook(__func__, "Unsupported ver %d\n", ver);
+		errno = EFAULT;
+		return -1;
+	}
+
+	return sqfs_stat_impl(relative, buf) ? 0 : -1;
+}
+
 int sqfs_open(const char *pathname, int flags, ...) {
 	const char *prefix = sqfs_mgr_get_prefix();
 	const char *sqfs_path = getenv("HOOKSQFS_FILE");
@@ -271,11 +502,6 @@ int sqfs_open(const char *pathname, int flags, ...) {
 
 	if (relative[0] == '\0') {
 		errno = EISDIR;
-		return -1;
-	}
-
-	if (!sqfs_mgr_load_image()) {
-		errno = ENOENT;
 		return -1;
 	}
 
@@ -368,7 +594,7 @@ static void enumerate_dir(sqfs_dir_reader_t *dir_reader, struct SqfsDirEntryNode
 		}
 		
 		node->dirent.d_ino = node->inode->base.inode_number;
-		node->dirent.d_off = 0; // Not used
+		node->dirent.d_off = 114514; // Not used
 		node->dirent.d_reclen = sizeof(struct dirent);
 		node->dirent.d_type = (node->inode->base.type == SQFS_INODE_DIR ||
 				       node->inode->base.type == SQFS_INODE_EXT_DIR) ? DT_DIR : DT_REG;
@@ -382,6 +608,58 @@ static void enumerate_dir(sqfs_dir_reader_t *dir_reader, struct SqfsDirEntryNode
 	free_sqfs_dir_entry_list(dir_entry_list);
 }
 
+int sqfs_access(const char *pathname, int mode)
+{
+	if (g_LibcFuncs.access(pathname, mode) == 0) {
+		if (!sqfs_check_path_then_convert(pathname, NULL, 0)) {
+			log_hook(__func__, "granted: g_LibcFuncs.access(path=\"%s\", mode=%d)\n",
+				pathname, mode);
+		}
+		return 0;
+	}
+
+	// The real access() returned false, check squashfs
+	char relative[PATH_MAX];
+	int ret = sqfs_check_path_then_convert(pathname, relative, sizeof(relative));
+	if (ret != 0) {
+		errno = ret;
+		goto return_err;
+	}
+
+	struct stat st;
+	if (!sqfs_stat_impl(relative, &st)) {
+		errno = EFAULT;
+		goto return_err;
+	}
+
+	bool can_read = (st.st_mode & 0444) != 0;
+	bool can_exec = (st.st_mode & 0111) != 0;
+
+	if ((mode & W_OK) != 0) {
+		errno = EROFS;
+		goto return_err;
+	}
+	if ((mode & R_OK) != 0 && !can_read) {
+		errno = EACCES;
+		goto return_err;
+	}
+	if ((mode & X_OK) != 0 && !can_exec) {
+		errno = EACCES;
+		goto return_err;
+	}
+
+	log_hook(__func__, "granted: path=\"%s\", mode=%d, st_mode=%o\n",
+		pathname, mode, st.st_mode);
+	return 0;
+
+return_err:
+	if (!sqfs_check_path_then_convert(pathname, NULL, 0)) {
+		log_hook(__func__, "denied: path=\"%s\", mode=%d, st_mode=%o, errno=%d\n",
+			pathname, mode, st.st_mode, errno);
+	}
+	return -1;
+}
+
 DIR * sqfs_opendir(const char *name) {
 	const char *prefix = sqfs_mgr_get_prefix();
 	const char *sqfs_path = getenv("HOOKSQFS_FILE");
@@ -392,14 +670,11 @@ DIR * sqfs_opendir(const char *name) {
 		return NULL;
 	}
 
-	if (!path_is_under_prefix(prefix, name)) {
+	// Fallback to original opendir if the path is not under our prefix
+	// or if the path is exactly the same as the squashfs file
+	if (!path_is_under_prefix(prefix, name) || path_equals_normalized(name, sqfs_path)) {
 		errno = ENOENT;
-		return NULL;
-	}
-
-	if (path_equals_normalized(name, sqfs_path)) {
-		errno = ENOENT;
-		return NULL;
+		return g_LibcFuncs.opendir(name);
 	}
 
 	if (!path_relative_to_root(prefix, name, relative, sizeof(relative))) {
@@ -407,12 +682,7 @@ DIR * sqfs_opendir(const char *name) {
 		return NULL;
 	}
 
-	log_msg("sqfs_opendir: %s -> %s\n", name, relative);
-
-	if (!sqfs_mgr_load_image()) {
-		errno = ENOENT;
-		return NULL;
-	}
+	log_hook(__func__, "%s -> %s\n", name, relative);
 
 	sqfs_dir_reader_t *dir_reader = sqfs_dir_reader_create(
 		&g_xSqfsMgr.super, g_xSqfsMgr.compressor, g_xSqfsMgr.file, 0);
@@ -449,7 +719,7 @@ DIR * sqfs_opendir(const char *name) {
 	}
 
 	bool is_real_dir = true;
-	DIR *underlying_dir = real.opendir(name);
+	DIR *underlying_dir = g_LibcFuncs.opendir(name);
 	if (underlying_dir == NULL) {
 		underlying_dir = create_backing_dir();
 		is_real_dir = false;
@@ -460,7 +730,7 @@ DIR * sqfs_opendir(const char *name) {
 	struct DirMapEntry *dir_entry = malloc(sizeof(struct DirMapEntry));
 	if (dir_entry == NULL) {
 		errno = ENOMEM;
-		real.closedir(underlying_dir);
+		g_LibcFuncs.closedir(underlying_dir);
 		goto out;
 	}
 
@@ -487,24 +757,44 @@ out:
 	return NULL;
 }
 
+static void dump_dirent(const char* prefix, const struct dirent *entry) {
+	if (entry == NULL) {
+		log_msg("  %s (null)\n", prefix);
+		return;
+	}
+
+	log_msg("  %s ino=%llu off=%lld reclen=%u type=%u name=\"%s\"\n",
+		prefix,
+		(unsigned long long)entry->d_ino,
+		(long long)entry->d_off,
+		(unsigned int)entry->d_reclen,
+		(unsigned int)entry->d_type,
+		entry ? entry->d_name : "(null)");
+}
+
 struct dirent *sqfs_readdir(DIR *dirp) {
 	struct DirMapEntry *found = NULL;
 
 	HASH_FIND_PTR(g_xSqfsMgr.dir_map, &dirp, found);
 
 	// If the given dirp is not in our map,
-	// it must be a real directory that sqfs_opendir didn't open, return.
-	if (found == NULL)
-		return NULL;
-
-	if (found->is_real_dir) {
-		struct dirent *result = real.readdir(dirp);
-		if (result != NULL)
-			return result;
+	// it must be a real directory that sqfs_opendir didn't open, fallback.
+	if (found == NULL) {
+		return g_LibcFuncs.readdir(dirp);
 	}
 
-	if (found->dir_entry_list_reached_end)
+	if (found->is_real_dir) {
+		struct dirent *result = g_LibcFuncs.readdir(dirp);
+		if (result != NULL) {
+			dump_dirent("real_dir:", result);
+			return result;
+		}
+	}
+
+	if (found->dir_entry_list_reached_end) {
+		dump_dirent("sqfs_dir:", NULL);
 		return NULL;
+	}
 
 	if (found->dir_entry_current == NULL)
 		found->dir_entry_current = found->dir_entry_list;
@@ -518,7 +808,8 @@ struct dirent *sqfs_readdir(DIR *dirp) {
 	if (found->dir_entry_current == NULL)
 		found->dir_entry_list_reached_end = true;
 
-	log_msg(" inode %d -> %s\n", result->d_ino, result->d_name);
+	dump_dirent("sqfs_dir:", result);
+
 	return result;
 }
 
@@ -526,8 +817,12 @@ int sqfs_closedir(DIR *dir) {
 	struct DirMapEntry *found = NULL;
 
 	HASH_FIND_PTR(g_xSqfsMgr.dir_map, &dir, found);
-	if (found == NULL)
-		return -1;
+
+	// If the given dirp is not in our map,
+	// it must be a real directory that sqfs_opendir didn't open, fallback.
+	if (found == NULL) {
+		return g_LibcFuncs.closedir(dir);
+	}
 
 	HASH_DEL(g_xSqfsMgr.dir_map, found);
 	sqfs_destroy(found->dir_reader);
@@ -535,7 +830,9 @@ int sqfs_closedir(DIR *dir) {
 	free_sqfs_dir_entry_list(&found->dir_entry_list);
 	free(found);
 
-	return real.closedir(underlying_dir);
+	log_hook(__func__, "dir=%p\n", dir);
+
+	return g_LibcFuncs.closedir(underlying_dir);
 }
 
 

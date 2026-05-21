@@ -47,7 +47,7 @@ DIR *create_backing_dir(void)
 			return NULL;
 		}
 
-		fd = real.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		fd = g_LibcFuncs.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 		saved_errno = errno;
 		rmdir(path);
 
@@ -56,7 +56,7 @@ DIR *create_backing_dir(void)
 			return NULL;
 		}
 
-		DIR *dir = real.fdopendir(fd);
+		DIR *dir = g_LibcFuncs.fdopendir(fd);
 		if (dir == NULL) {
 			saved_errno = errno;
 			syscall(SYS_close, fd);
