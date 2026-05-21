@@ -508,7 +508,7 @@ int sqfs_open(const char *pathname, int flags, ...) {
 
 	fd_entry->key = fd;
 	fd_entry->inode = inode;
-	HASH_ADD_PTR(g_xSqfsMgr.fd_map, key, fd_entry);
+	HASH_ADD_INT(g_xSqfsMgr.fd_map, key, fd_entry);
 
 	errno = 0;
 	log_hook(__func__, "ok: relative_path=\"%s\", flags=0x%x, errno=%d\n",
@@ -526,6 +526,51 @@ error_and_free_inode:
 		relative, flags,  errno);
 
 	return -1;
+}
+
+ssize_t sqfs_read(int fd, void *buf, size_t count)
+{
+	struct FDMapEntry *found = NULL;
+
+	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
+	if (found == NULL) {
+		return g_LibcFuncs.read(fd, buf, count);
+	}
+
+	(void)buf;
+
+	log_hook(__func__, "stub: fd=%d, count=%zu, inode=%u\n",
+		fd, count,
+		found->inode != NULL ? found->inode->base.inode_number : 0);
+
+	errno = 0;
+	return count;
+}
+
+int sqfs_close(int fd)
+{
+	struct FDMapEntry *found = NULL;
+
+	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
+	if (found == NULL) {
+		return g_LibcFuncs.close(fd);
+	}
+
+	unsigned int inode_number =
+		found->inode != NULL ? found->inode->base.inode_number : 0;
+
+	HASH_DEL(g_xSqfsMgr.fd_map, found);
+	sqfs_free(found->inode);
+	free(found);
+
+	int ret = g_LibcFuncs.close(fd);
+	int saved_errno = errno;
+
+	log_hook(__func__, "fd=%d, inode=%u, ret=%d, errno=%d\n",
+		fd, inode_number, ret, ret == 0 ? 0 : saved_errno);
+
+	errno = saved_errno;
+	return ret;
 }
 
 static void free_sqfs_dir_entry_list(struct SqfsDirEntryNode **dir_entry_list) {

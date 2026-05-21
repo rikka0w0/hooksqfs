@@ -186,6 +186,8 @@ static void uninstall_hooks(void)
 
 	hooks_funchook = NULL;
 	g_LibcFuncs.open = g_xTrampoline.open;
+	g_LibcFuncs.read = g_xTrampoline.read;
+	g_LibcFuncs.close = g_xTrampoline.close;
 	g_LibcFuncs.opendir = g_xTrampoline.opendir;
 	g_LibcFuncs.readdir = g_xTrampoline.readdir;
 	g_LibcFuncs.closedir = g_xTrampoline.closedir;
@@ -197,7 +199,8 @@ static void install_hooks(void)
 {
 	int rv;
 
-	if (g_LibcFuncs.open == NULL ||
+	if (g_LibcFuncs.open == NULL || g_LibcFuncs.read == NULL ||
+	    g_LibcFuncs.close == NULL ||
 	    g_LibcFuncs.opendir == NULL || g_LibcFuncs.readdir == NULL ||
 	    g_LibcFuncs.closedir == NULL || g_LibcFuncs.access == NULL ||
 	    g_LibcFuncs.__xstat == NULL) {
@@ -206,6 +209,8 @@ static void install_hooks(void)
 	}
 
 	g_xTrampoline.open = g_LibcFuncs.open;
+	g_xTrampoline.read = g_LibcFuncs.read;
+	g_xTrampoline.close = g_LibcFuncs.close;
 	g_xTrampoline.opendir = g_LibcFuncs.opendir;
 	g_xTrampoline.readdir = g_LibcFuncs.readdir;
 	g_xTrampoline.closedir = g_LibcFuncs.closedir;
@@ -219,6 +224,8 @@ static void install_hooks(void)
 	}
 
 	if (prepare_hook("open", (void **)&g_LibcFuncs.open, (void *)sqfs_open) != 0 ||
+	    prepare_hook("read", (void **)&g_LibcFuncs.read, (void *)sqfs_read) != 0 ||
+	    prepare_hook("close", (void **)&g_LibcFuncs.close, (void *)sqfs_close) != 0 ||
 	    prepare_hook("opendir", (void **)&g_LibcFuncs.opendir, (void *)sqfs_opendir) != 0 ||
 	    prepare_hook("readdir", (void **)&g_LibcFuncs.readdir, (void *)sqfs_readdir) != 0 ||
 	    prepare_hook("closedir", (void **)&g_LibcFuncs.closedir, (void *)sqfs_closedir) != 0 ||
@@ -236,8 +243,9 @@ static void install_hooks(void)
 		return;
 	}
 
-	log_msg("hooks installed: open=%p opendir=%p readdir=%p closedir=%p access=%p __xstat=%p\n",
-		(void *)g_LibcFuncs.open, (void *)g_LibcFuncs.opendir,
+	log_msg("hooks installed: open=%p read=%p close=%p opendir=%p readdir=%p closedir=%p access=%p __xstat=%p\n",
+		(void *)g_LibcFuncs.open, (void *)g_LibcFuncs.read,
+		(void *)g_LibcFuncs.close, (void *)g_LibcFuncs.opendir,
 		(void *)g_LibcFuncs.readdir, (void *)g_LibcFuncs.closedir,
 		(void *)g_LibcFuncs.access, (void *)g_LibcFuncs.__xstat);
 }

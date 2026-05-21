@@ -4,10 +4,12 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 struct LibcFunctions {
 	int (*open)(const char *pathname, int flags, ...);
 	int (*open64)(const char *pathname, int flags, ...);
+	ssize_t (*read)(int fd, void *buf, size_t count);
 	ssize_t (*write)(int fd, const void *buf, size_t count);
 	int (*close)(int fd);
 	int (*openat)(int dirfd, const char *pathname, int flags, ...);
