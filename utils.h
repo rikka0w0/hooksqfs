@@ -17,11 +17,14 @@ DIR *create_backing_dir(void);
 
 bool path_normalize_lexical(const char *in, char *out, size_t out_size);
 bool path_equals_normalized(const char *a, const char *b);
+/*
+ * Pass NULL for relative_out and/or 0 for relative_out_size to only check
+ * containment.
+ */
 bool path_relative_to_root(const char *root,
                            const char *path,
                            char *relative_out,
                            size_t relative_out_size);
-bool path_is_under_prefix(const char* prefix, const char *path);
 
 
 #endif /* UTILS_H */

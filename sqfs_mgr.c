@@ -268,16 +268,8 @@ static int sqfs_check_path_then_convert(const char *pathname, char* relative_out
 		return EFAULT;
 	}
 
-	if (!path_is_under_prefix(prefix, pathname)) {
-		return -ENOENT;
-	}
-
 	if (path_equals_normalized(pathname, sqfs_path)) {
 		return ENOENT;
-	}
-
-	if (!relative_out || !len) {
-		return 0;
 	}
 
 	if (!path_relative_to_root(prefix, pathname, relative_out, len)) {
@@ -312,7 +304,7 @@ static int sqfs_find_inode(const char *relative, sqfs_inode_generic_t **inode_ou
 
 	sqfs_destroy(dir_reader);
 	if (ret != 0) {
-		sqfs_util_log_failure("sqfs_dir_reader_find_by_path", ret);
+		log_msg("sqfs_find_inod cannot find \"%s\": %d (%s)\n", relative, ret, sqfs_error_string(ret));
 		errno = errno_from_sqfs(ret);
 		return -1;
 	}
@@ -475,11 +467,6 @@ int sqfs_open(const char *pathname, int flags, ...) {
 
 	if (pathname == NULL) {
 		errno = EFAULT;
-		return -1;
-	}
-
-	if (!path_is_under_prefix(prefix, pathname)) {
-		errno = ENOENT;
 		return -1;
 	}
 
@@ -661,25 +648,19 @@ return_err:
 }
 
 DIR * sqfs_opendir(const char *name) {
-	const char *prefix = sqfs_mgr_get_prefix();
-	const char *sqfs_path = getenv("HOOKSQFS_FILE");
+	DIR *underlying_dir = g_LibcFuncs.opendir(name);
+	bool is_real_dir = underlying_dir != NULL;
+
 	char relative[PATH_MAX];
-
-	if (name == NULL) {
-		errno = EFAULT;
-		return NULL;
-	}
-
-	// Fallback to original opendir if the path is not under our prefix
-	// or if the path is exactly the same as the squashfs file
-	if (!path_is_under_prefix(prefix, name) || path_equals_normalized(name, sqfs_path)) {
-		errno = ENOENT;
-		return g_LibcFuncs.opendir(name);
-	}
-
-	if (!path_relative_to_root(prefix, name, relative, sizeof(relative))) {
-		errno = ENOENT;
-		return NULL;
+	if (sqfs_check_path_then_convert(name, relative, sizeof(relative)) != 0) {
+		if (is_real_dir) {
+			// The given path exists in the real filesystem, but not part of the squashfs
+			return underlying_dir;
+		} else {
+			// The given path really doesn't exist.
+			errno = ENOENT;
+			return NULL;
+		}
 	}
 
 	log_hook(__func__, "%s -> %s\n", name, relative);
@@ -692,16 +673,8 @@ DIR * sqfs_opendir(const char *name) {
 	}
 
 	sqfs_inode_generic_t *inode = NULL;
-	int ret;
-	if (relative[0] == '\0') {
-		ret = sqfs_dir_reader_get_root_inode(dir_reader, &inode);
-	} else {
-		ret = sqfs_dir_reader_find_by_path(dir_reader, NULL, relative, &inode);
-	}
-	if (ret != 0) {
-		sqfs_util_log_failure("sqfs_dir_reader_find_by_path", ret);
-		log_hook(__func__, "sqfs_dir_reader_find_by_path(\"%s\") failed: %d\n", relative, ret);
-		errno = errno_from_sqfs(ret);
+	if (sqfs_find_inode(relative, &inode) != 0) {
+		log_hook(__func__, "sqfs_dir_reader_find_by_path(\"%s\") failed: %d\n", relative, errno);
 		goto out;
 	}
 
@@ -711,19 +684,15 @@ DIR * sqfs_opendir(const char *name) {
 		goto out;
 	}
 
-	ret = sqfs_dir_reader_open_dir(dir_reader, inode, 0);
+	int ret = sqfs_dir_reader_open_dir(dir_reader, inode, 0);
 	if (ret != 0) {
 		sqfs_util_log_failure("sqfs_dir_reader_open_dir", ret);
 		errno = errno_from_sqfs(ret);
 		goto out;
 	}
 
-	bool is_real_dir = true;
-	DIR *underlying_dir = g_LibcFuncs.opendir(name);
-	if (underlying_dir == NULL) {
+	if (!is_real_dir)
 		underlying_dir = create_backing_dir();
-		is_real_dir = false;
-	}
 	if (underlying_dir == NULL)
 		goto out;
 

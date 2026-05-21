@@ -311,11 +311,12 @@ bool path_relative_to_root(const char *root,
 	size_t root_len;
 	size_t path_len;
 	const char *relative;
+	bool write_relative;
 
-	if (root == NULL || path == NULL ||
-	    relative_out == NULL || relative_out_size == 0) {
+	if (root == NULL || path == NULL) {
 		return false;
 	}
+	write_relative = relative_out != NULL && relative_out_size != 0;
 
 	if (!path_normalize_lexical(root, norm_root, sizeof(norm_root)) ||
 	    !path_normalize_lexical(path, norm_path, sizeof(norm_path))) {
@@ -342,6 +343,10 @@ bool path_relative_to_root(const char *root,
 
 		relative = norm_path + 1;
 
+		if (!write_relative) {
+			return true;
+		}
+
 		if (strlen(relative) >= relative_out_size) {
 			return false;
 		}
@@ -362,11 +367,9 @@ bool path_relative_to_root(const char *root,
 	 * The path is exactly equal to root.
 	 */
 	if (path_len == root_len) {
-		if (relative_out_size < 1) {
-			return false;
+		if (write_relative) {
+			relative_out[0] = '\0';
 		}
-
-		relative_out[0] = '\0';
 		return true;
 	}
 
@@ -383,14 +386,18 @@ bool path_relative_to_root(const char *root,
 
 	relative = norm_path + root_len + 1;
 
-	if (strlen(relative) >= relative_out_size) {
-		return false;
+	if (write_relative) {
+		if (strlen(relative) >= relative_out_size) {
+			return false;
+		}
+
+		strcpy(relative_out, relative);
 	}
 
-	strcpy(relative_out, relative);
 	return true;
 }
 
+/*
 bool path_is_under_prefix(const char* prefix, const char *path)
 {
 	char norm_path[PATH_MAX];
@@ -427,3 +434,4 @@ bool path_is_under_prefix(const char* prefix, const char *path)
 
 	return false;
 }
+*/
