@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -98,12 +99,15 @@ static const char *sqfs_mgr_get_prefix(void)
 	return prefix != NULL ? prefix : "/hook";
 }
 
-static bool open_flags_need_write(int flags)
+static bool open_flags_need_mode(int flags)
 {
-	int accmode = flags & O_ACCMODE;
+#ifdef O_TMPFILE
+	if ((flags & O_TMPFILE) == O_TMPFILE) {
+		return true;
+	}
+#endif
 
-	return accmode == O_WRONLY || accmode == O_RDWR ||
-	       (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0;
+	return (flags & O_CREAT) != 0;
 }
 
 static int errno_from_sqfs(int ret)
@@ -459,86 +463,68 @@ int sqfs_xstat(int ver, const char *pathname, struct stat *buf) {
 }
 
 int sqfs_open(const char *pathname, int flags, ...) {
-	const char *prefix = sqfs_mgr_get_prefix();
-	const char *sqfs_path = getenv("HOOKSQFS_FILE");
 	char relative[PATH_MAX];
-	sqfs_u64 size = 0;
+	mode_t mode = 0;
+	bool has_mode = open_flags_need_mode(flags);
+	int fd;
 	int ret;
 
-	if (pathname == NULL) {
-		errno = EFAULT;
-		return -1;
+	if (has_mode) {
+		va_list ap;
+		va_start(ap, flags);
+		mode = (mode_t)va_arg(ap, int);
+		va_end(ap);
+
+		fd = g_LibcFuncs.open(pathname, flags, mode);
+	} else {
+		fd = g_LibcFuncs.open(pathname, flags);
 	}
 
-	if (path_equals_normalized(pathname, sqfs_path)) {
-		errno = ENOENT;
-		return -1;
-	}
-	
-	if (open_flags_need_write(flags)) {
-		errno = EROFS;
-		return -1;
-	}
+	if (fd >= 0)
+		return fd;
 
-	if (!path_relative_to_root(prefix, pathname, relative, sizeof(relative))) {
-		errno = ENOENT;
-		return -1;
-	}
-
-	log_msg("sqfs_open: %s -> %s\n", pathname, relative);
-
-	if (relative[0] == '\0') {
-		errno = EISDIR;
-		return -1;
-	}
-
-	sqfs_dir_reader_t *dir_reader = sqfs_dir_reader_create(
-		&g_xSqfsMgr.super, g_xSqfsMgr.compressor, g_xSqfsMgr.file, 0);
-	if (dir_reader == NULL) {
-		errno = ENOMEM;
+	int saved_errno = errno;
+	ret = sqfs_check_path_then_convert(pathname, relative, sizeof(relative));
+	if (ret != 0) {
+		errno = saved_errno;
 		return -1;
 	}
 
 	sqfs_inode_generic_t *inode = NULL;
-	ret = sqfs_dir_reader_find_by_path(dir_reader, NULL, relative, &inode);
-	sqfs_destroy(dir_reader);
-	if (ret != 0) {
-		sqfs_util_log_failure("sqfs_dir_reader_find_by_path", ret);
-		errno = errno_from_sqfs(ret);
+	sqfs_find_inode(relative, &inode);
+	if (inode == NULL) {
 		return -1;
 	}
 
-	if (inode->base.type != SQFS_INODE_FILE &&
-			inode->base.type != SQFS_INODE_EXT_FILE) {
-		errno = EISDIR;
-		goto error_and_free_inode;
-	}
-
-	ret = sqfs_inode_get_file_size(inode, &size);
-	if (ret != 0) {
-		sqfs_util_log_failure("sqfs_inode_get_file_size", ret);
-		errno = errno_from_sqfs(ret);
-		goto error_and_free_inode;
-	}
-
-	int fd = create_backing_fd(flags);
+	fd = create_backing_fd(flags);
 	if (fd < 0)
 		goto error_and_free_inode;
 
 	struct FDMapEntry *fd_entry = malloc(sizeof(struct FDMapEntry));
 	if (fd_entry == NULL) {
 		errno = ENOMEM;
-		syscall(SYS_close, fd);
-		goto error_and_free_inode;
+		goto error_and_free_fd;
 	}
 
 	fd_entry->key = fd;
 	fd_entry->inode = inode;
 	HASH_ADD_PTR(g_xSqfsMgr.fd_map, key, fd_entry);
+
+	errno = 0;
+	log_hook(__func__, "ok: relative_path=\"%s\", flags=0x%x, errno=%d\n",
+		relative, flags, errno);
+
 	return fd;
+
+error_and_free_fd:
+	g_LibcFuncs.close(fd);
 
 error_and_free_inode:
 	sqfs_free(inode);
+
+	log_hook(__func__, "failed: relative_path=\"%s\", flags=0x%x, errno=%d\n",
+		relative, flags,  errno);
+
 	return -1;
 }
 
