@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #define WRITE_LOG_TO_FILE 1
@@ -16,18 +17,15 @@
 #if WRITE_LOG_TO_FILE
 static void write_log_file(const char *buf, size_t len)
 {
-	if (g_LibcFuncs.open == NULL || g_LibcFuncs.write == NULL || g_LibcFuncs.close == NULL)
-		return;
-
-	int fd = g_LibcFuncs.open("/tmp/log.txt",
-				   O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
-				   0644);
+	int fd = (int)syscall(SYS_openat, AT_FDCWD, "/tmp/log.txt",
+			      O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
+			      0644);
 	if (fd < 0)
 		return;
 
 	const char *p = buf;
 	while (len > 0) {
-		ssize_t written = g_LibcFuncs.write(fd, p, len);
+		ssize_t written = (ssize_t)syscall(SYS_write, fd, p, len);
 		if (written < 0) {
 			if (errno == EINTR)
 				continue;
@@ -40,7 +38,7 @@ static void write_log_file(const char *buf, size_t len)
 		len -= (size_t)written;
 	}
 
-	g_LibcFuncs.close(fd);
+	syscall(SYS_close, fd);
 }
 #endif
 

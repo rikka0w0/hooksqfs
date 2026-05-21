@@ -187,6 +187,10 @@ static void uninstall_hooks(void)
 	hooks_funchook = NULL;
 	g_LibcFuncs.open = g_xTrampoline.open;
 	g_LibcFuncs.read = g_xTrampoline.read;
+	g_LibcFuncs.pread = g_xTrampoline.pread;
+	g_LibcFuncs.pread64 = g_xTrampoline.pread64;
+	g_LibcFuncs.lseek = g_xTrampoline.lseek;
+	g_LibcFuncs.lseek64 = g_xTrampoline.lseek64;
 	g_LibcFuncs.close = g_xTrampoline.close;
 	g_LibcFuncs.opendir = g_xTrampoline.opendir;
 	g_LibcFuncs.readdir = g_xTrampoline.readdir;
@@ -200,6 +204,7 @@ static void install_hooks(void)
 	int rv;
 
 	if (g_LibcFuncs.open == NULL || g_LibcFuncs.read == NULL ||
+	    g_LibcFuncs.pread == NULL || g_LibcFuncs.lseek == NULL ||
 	    g_LibcFuncs.close == NULL ||
 	    g_LibcFuncs.opendir == NULL || g_LibcFuncs.readdir == NULL ||
 	    g_LibcFuncs.closedir == NULL || g_LibcFuncs.access == NULL ||
@@ -210,6 +215,10 @@ static void install_hooks(void)
 
 	g_xTrampoline.open = g_LibcFuncs.open;
 	g_xTrampoline.read = g_LibcFuncs.read;
+	g_xTrampoline.pread = g_LibcFuncs.pread;
+	g_xTrampoline.pread64 = g_LibcFuncs.pread64;
+	g_xTrampoline.lseek = g_LibcFuncs.lseek;
+	g_xTrampoline.lseek64 = g_LibcFuncs.lseek64;
 	g_xTrampoline.close = g_LibcFuncs.close;
 	g_xTrampoline.opendir = g_LibcFuncs.opendir;
 	g_xTrampoline.readdir = g_LibcFuncs.readdir;
@@ -225,6 +234,14 @@ static void install_hooks(void)
 
 	if (prepare_hook("open", (void **)&g_LibcFuncs.open, (void *)sqfs_open) != 0 ||
 	    prepare_hook("read", (void **)&g_LibcFuncs.read, (void *)sqfs_read) != 0 ||
+	    prepare_hook("pread", (void **)&g_LibcFuncs.pread, (void *)sqfs_pread) != 0 ||
+	    prepare_hook("lseek", (void **)&g_LibcFuncs.lseek, (void *)sqfs_lseek) != 0 ||
+	    ((void *)g_LibcFuncs.pread64 != (void *)g_LibcFuncs.pread &&
+	     prepare_hook("pread64", (void **)&g_LibcFuncs.pread64,
+			  (void *)sqfs_pread64) != 0) ||
+	    ((void *)g_LibcFuncs.lseek64 != (void *)g_LibcFuncs.lseek &&
+	     prepare_hook("lseek64", (void **)&g_LibcFuncs.lseek64,
+			  (void *)sqfs_lseek64) != 0) ||
 	    prepare_hook("close", (void **)&g_LibcFuncs.close, (void *)sqfs_close) != 0 ||
 	    prepare_hook("opendir", (void **)&g_LibcFuncs.opendir, (void *)sqfs_opendir) != 0 ||
 	    prepare_hook("readdir", (void **)&g_LibcFuncs.readdir, (void *)sqfs_readdir) != 0 ||
@@ -243,11 +260,19 @@ static void install_hooks(void)
 		return;
 	}
 
-	log_msg("hooks installed: open=%p read=%p close=%p opendir=%p readdir=%p closedir=%p access=%p __xstat=%p\n",
-		(void *)g_LibcFuncs.open, (void *)g_LibcFuncs.read,
-		(void *)g_LibcFuncs.close, (void *)g_LibcFuncs.opendir,
-		(void *)g_LibcFuncs.readdir, (void *)g_LibcFuncs.closedir,
-		(void *)g_LibcFuncs.access, (void *)g_LibcFuncs.__xstat);
+	log_msg("hooks installed:\n");
+	log_msg("  open=%p\n", (void *)g_LibcFuncs.open);
+	log_msg("  read=%p\n", (void *)g_LibcFuncs.read);
+	log_msg("  pread=%p\n", (void *)g_LibcFuncs.pread);
+	log_msg("  pread64=%p\n", (void *)g_LibcFuncs.pread64);
+	log_msg("  lseek=%p\n", (void *)g_LibcFuncs.lseek);
+	log_msg("  lseek64=%p\n", (void *)g_LibcFuncs.lseek64);
+	log_msg("  close=%p\n", (void *)g_LibcFuncs.close);
+	log_msg("  opendir=%p\n", (void *)g_LibcFuncs.opendir);
+	log_msg("  readdir=%p\n", (void *)g_LibcFuncs.readdir);
+	log_msg("  closedir=%p\n", (void *)g_LibcFuncs.closedir);
+	log_msg("  access=%p\n", (void *)g_LibcFuncs.access);
+	log_msg("  __xstat=%p\n", (void *)g_LibcFuncs.__xstat);
 }
 
 /* ------------------------------------------------------------------ */

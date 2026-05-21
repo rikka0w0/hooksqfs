@@ -77,6 +77,8 @@ struct FDMapEntry {
 
 	// The corresponding squashfs inode
 	sqfs_inode_generic_t *inode;
+
+	uint64_t offset;
 };
 
 static struct sqfs_mgr {
@@ -508,11 +510,12 @@ int sqfs_open(const char *pathname, int flags, ...) {
 
 	fd_entry->key = fd;
 	fd_entry->inode = inode;
+	fd_entry->offset = 0;
 	HASH_ADD_INT(g_xSqfsMgr.fd_map, key, fd_entry);
 
 	errno = 0;
-	log_hook(__func__, "ok: relative_path=\"%s\", flags=0x%x, errno=%d\n",
-		relative, flags, errno);
+	log_hook(__func__, "ok: relative_path=\"%s\", flags=0x%x, errno=%d => fd=%d\n",
+		relative, flags, errno, fd);
 
 	return fd;
 
@@ -537,14 +540,232 @@ ssize_t sqfs_read(int fd, void *buf, size_t count)
 		return g_LibcFuncs.read(fd, buf, count);
 	}
 
-	(void)buf;
+	int ret = sqfs_data_reader_read(
+		g_xSqfsMgr.data_reader,
+		found->inode,
+		found->offset,
+		buf, count
+	);
 
-	log_hook(__func__, "stub: fd=%d, count=%zu, inode=%u\n",
-		fd, count,
-		found->inode != NULL ? found->inode->base.inode_number : 0);
+	if (ret >= 0) {
+		// Success or EOF
+		log_hook(__func__, "ok: fd=%d, count=%zu@%llu, inode=%u: ret=%d\n",
+			fd, count, (unsigned long long)found->offset,
+			found->inode->base.inode_number, ret);
 
+		found->offset += (uint64_t)ret;
+
+		errno = 0;
+		return ret;
+	} else {
+		log_hook(__func__, "failed: fd=%d, count=%zu, inode=%u: %s\n",
+			fd, count, found->inode->base.inode_number,
+			sqfs_error_string(ret));
+
+		errno = errno_from_sqfs(ret);
+		return -1;
+	}
+}
+
+static ssize_t sqfs_pread_mapped(const char *func, struct FDMapEntry *fd_record, void *buf,
+				 size_t count, off64_t offset)
+{
+	if (offset < 0) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	int ret = sqfs_data_reader_read(
+		g_xSqfsMgr.data_reader,
+		fd_record->inode,
+		(sqfs_u64)offset,
+		buf, count
+	);
+
+	if (ret >= 0) {
+		log_hook(func, "ok: fd=%d, count=%zu@%lld, inode=%u: ret=%d\n",
+			fd_record->key, count, (long long)offset,
+			fd_record->inode->base.inode_number, ret);
+
+		errno = 0;
+		return ret;
+	}
+
+	log_hook(func, "failed: fd=%d, count=%zu@%lld, inode=%u: %s\n",
+		fd_record->key, count, (long long)offset,
+		fd_record->inode->base.inode_number,
+		sqfs_error_string(ret));
+
+	errno = errno_from_sqfs(ret);
+	return -1;
+}
+
+ssize_t sqfs_pread(int fd, void *buf, size_t count, off_t offset)
+{
+	struct FDMapEntry *found = NULL;
+
+	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
+	if (found == NULL) {
+		return g_LibcFuncs.pread(fd, buf, count, offset);
+	}
+
+	return sqfs_pread_mapped(__func__, found, buf, count, (off64_t)offset);
+}
+
+ssize_t sqfs_pread64(int fd, void *buf, size_t count, off64_t offset)
+{
+	struct FDMapEntry *found = NULL;
+
+	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
+	if (found == NULL) {
+		if (g_LibcFuncs.pread64 != NULL)
+			return g_LibcFuncs.pread64(fd, buf, count, offset);
+
+		errno = ENOSYS;
+		return -1;
+	}
+
+	return sqfs_pread_mapped(__func__, found, buf, count, offset);
+}
+
+static uint64_t max_signed_value_for_size(size_t size)
+{
+	if (size >= sizeof(int64_t))
+		return (uint64_t)INT64_MAX;
+
+	return (UINT64_C(1) << (size * CHAR_BIT - 1)) - 1;
+}
+
+static int sqfs_seek_add(uint64_t base, off64_t offset, uint64_t *out)
+{
+	if (offset < 0) {
+		uint64_t distance = (uint64_t)(-(offset + 1)) + 1;
+
+		if (distance > base)
+			return EINVAL;
+
+		*out = base - distance;
+		return 0;
+	}
+
+	if (UINT64_MAX - base < (uint64_t)offset)
+		return EOVERFLOW;
+
+	*out = base + (uint64_t)offset;
+	return 0;
+}
+
+static int sqfs_seek_calculate(struct FDMapEntry *fd_record, off64_t offset,
+			       int whence, uint64_t *new_offset)
+{
+	uint64_t size = sqfs_inode_size(fd_record->inode);
+
+	switch (whence) {
+	case SEEK_SET:
+		return sqfs_seek_add(0, offset, new_offset);
+	case SEEK_CUR:
+		return sqfs_seek_add(fd_record->offset, offset, new_offset);
+	case SEEK_END:
+		return sqfs_seek_add(size, offset, new_offset);
+#ifdef SEEK_DATA
+	case SEEK_DATA:
+		if (offset < 0)
+			return EINVAL;
+		if ((uint64_t)offset >= size)
+			return ENXIO;
+		*new_offset = (uint64_t)offset;
+		return 0;
+#endif
+#ifdef SEEK_HOLE
+	case SEEK_HOLE:
+		if (offset < 0)
+			return EINVAL;
+		if ((uint64_t)offset > size)
+			return ENXIO;
+		*new_offset = size;
+		return 0;
+#endif
+	default:
+		return EINVAL;
+	}
+}
+
+static int sqfs_lseek_mapped(const char *func, struct FDMapEntry *fd_record,
+			     off64_t offset,
+			     int whence, uint64_t max_return,
+			     uint64_t *new_offset)
+{
+	uint64_t old_offset = fd_record->offset;
+	int err = sqfs_seek_calculate(fd_record, offset, whence, new_offset);
+
+	if (err != 0) {
+		errno = err;
+		log_hook(func, "failed: fd=%d, offset=%lld, whence=%d, old=%llu, inode=%u, errno=%d\n",
+			fd_record->key, (long long)offset, whence,
+			(unsigned long long)old_offset,
+			fd_record->inode != NULL ? fd_record->inode->base.inode_number : 0,
+			err);
+		return -1;
+	}
+
+	if (*new_offset > max_return) {
+		errno = EOVERFLOW;
+		log_hook(func, "failed: fd=%d, offset=%lld, whence=%d, old=%llu, new=%llu, inode=%u, errno=%d\n",
+			fd_record->key, (long long)offset, whence,
+			(unsigned long long)old_offset,
+			(unsigned long long)*new_offset,
+			fd_record->inode != NULL ? fd_record->inode->base.inode_number : 0,
+			EOVERFLOW);
+		return -1;
+	}
+
+	fd_record->offset = *new_offset;
 	errno = 0;
-	return count;
+	log_hook(func, "ok: fd=%d, offset=%lld, whence=%d, old=%llu, new=%llu, inode=%u\n",
+		fd_record->key, (long long)offset, whence,
+		(unsigned long long)old_offset,
+		(unsigned long long)*new_offset,
+		fd_record->inode != NULL ? fd_record->inode->base.inode_number : 0);
+	return 0;
+}
+
+off_t sqfs_lseek(int fd, off_t offset, int whence)
+{
+	struct FDMapEntry *found = NULL;
+	uint64_t new_offset = 0;
+
+	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
+	if (found == NULL) {
+		return g_LibcFuncs.lseek(fd, offset, whence);
+	}
+
+	if (sqfs_lseek_mapped(__func__, found, (off64_t)offset, whence,
+			      max_signed_value_for_size(sizeof(off_t)),
+			      &new_offset) != 0)
+		return (off_t)-1;
+
+	return (off_t)new_offset;
+}
+
+off64_t sqfs_lseek64(int fd, off64_t offset, int whence)
+{
+	struct FDMapEntry *found = NULL;
+	uint64_t new_offset = 0;
+
+	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
+	if (found == NULL) {
+		if (g_LibcFuncs.lseek64 != NULL)
+			return g_LibcFuncs.lseek64(fd, offset, whence);
+
+		errno = ENOSYS;
+		return (off64_t)-1;
+	}
+
+	if (sqfs_lseek_mapped(__func__, found, offset, whence,
+			      (uint64_t)INT64_MAX, &new_offset) != 0)
+		return (off64_t)-1;
+
+	return (off64_t)new_offset;
 }
 
 int sqfs_close(int fd)
