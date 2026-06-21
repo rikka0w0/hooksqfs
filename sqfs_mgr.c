@@ -310,7 +310,7 @@ static int sqfs_find_inode(const char *relative, sqfs_inode_generic_t **inode_ou
 
 	sqfs_destroy(dir_reader);
 	if (ret != 0) {
-		log_msg("sqfs_find_inod cannot find \"%s\": %d (%s)\n", relative, ret, sqfs_error_string(ret));
+		log_msg("sqfs_find_inode cannot find \"%s\": %d (%s)\n", relative, ret, sqfs_error_string(ret));
 		errno = errno_from_sqfs(ret);
 		return -1;
 	}
@@ -907,6 +907,7 @@ DIR * sqfs_opendir(const char *name) {
 	if (sqfs_check_path_then_convert(name, relative, sizeof(relative)) != 0) {
 		if (is_real_dir) {
 			// The given path exists in the real filesystem, but not part of the squashfs
+			errno = 0;
 			return underlying_dir;
 		} else {
 			// The given path really doesn't exist.
@@ -926,7 +927,16 @@ DIR * sqfs_opendir(const char *name) {
 
 	sqfs_inode_generic_t *inode = NULL;
 	if (sqfs_find_inode(relative, &inode) != 0) {
-		log_hook(__func__, "sqfs_dir_reader_find_by_path(\"%s\") failed: %d\n", relative, errno);
+		int saved_errno = errno;
+		if (is_real_dir) {
+			// The given path is under prefix, but belong to the real filesystem
+			log_hook(__func__, "\"%s\" belong to the upper layer\n", relative);
+			errno = 0;
+			return underlying_dir;
+		}
+
+		log_hook(__func__, "sqfs_find_inode(\"%s\") failed: %d\n", relative, errno);
+		errno = saved_errno;
 		goto out;
 	}
 
