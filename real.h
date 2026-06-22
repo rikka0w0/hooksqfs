@@ -16,6 +16,7 @@ struct LibcFunctions {
 	off64_t (*lseek64)(int fd, off64_t offset, int whence);
 	ssize_t (*write)(int fd, const void *buf, size_t count);
 	int (*close)(int fd);
+	int (*__close_nocancel)(int fd);
 	int (*openat)(int dirfd, const char *pathname, int flags, ...);
 	int (*openat64)(int dirfd, const char *pathname, int flags, ...);
 	FILE *(*fopen)(const char *pathname, const char *mode);

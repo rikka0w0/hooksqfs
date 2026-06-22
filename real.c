@@ -23,6 +23,7 @@ void vPopulateLibcFuncPtrs(void) {
 	g_LibcFuncs.lseek64 = dlsym(RTLD_NEXT, "lseek64");
 	g_LibcFuncs.write = dlsym(RTLD_NEXT, "write");
 	g_LibcFuncs.close = dlsym(RTLD_NEXT, "close");
+	g_LibcFuncs.__close_nocancel = dlsym(RTLD_NEXT, "__close_nocancel");
 	g_LibcFuncs.openat = dlsym(RTLD_NEXT, "openat");
 	g_LibcFuncs.openat64 = dlsym(RTLD_NEXT, "openat64");
 	g_LibcFuncs.fopen = dlsym(RTLD_NEXT, "fopen");

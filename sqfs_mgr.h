@@ -16,6 +16,7 @@ ssize_t sqfs_pread64(int fd, void *buf, size_t count, off64_t offset);
 off_t sqfs_lseek(int fd, off_t offset, int whence);
 off64_t sqfs_lseek64(int fd, off64_t offset, int whence);
 int sqfs_close(int fd);
+int sqfs_close_nocancel(int fd);
 int sqfs_xstat(int vers, const char *pathname, struct stat *buf);
 int sqfs_access(const char *pathname, int mode);
 DIR *sqfs_opendir(const char *name);

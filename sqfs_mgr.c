@@ -768,13 +768,18 @@ off64_t sqfs_lseek64(int fd, off64_t offset, int whence)
 	return (off64_t)new_offset;
 }
 
-int sqfs_close(int fd)
+static int sqfs_close_impl(const char *func, int fd, int (*real_close)(int))
 {
 	struct FDMapEntry *found = NULL;
 
+	if (real_close == NULL) {
+		errno = ENOSYS;
+		return -1;
+	}
+
 	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
 	if (found == NULL) {
-		return g_LibcFuncs.close(fd);
+		return real_close(fd);
 	}
 
 	unsigned int inode_number =
@@ -784,14 +789,27 @@ int sqfs_close(int fd)
 	sqfs_free(found->inode);
 	free(found);
 
-	int ret = g_LibcFuncs.close(fd);
+	int ret = real_close(fd);
 	int saved_errno = errno;
 
-	log_hook(__func__, "fd=%d, inode=%u, ret=%d, errno=%d\n",
+	log_hook(func, "fd=%d, inode=%u, ret=%d, errno=%d\n",
 		fd, inode_number, ret, ret == 0 ? 0 : saved_errno);
 
 	errno = saved_errno;
 	return ret;
+}
+
+int sqfs_close(int fd)
+{
+	return sqfs_close_impl(__func__, fd, g_LibcFuncs.close);
+}
+
+int sqfs_close_nocancel(int fd)
+{
+	int (*real_close)(int) = g_LibcFuncs.__close_nocancel != NULL ?
+		g_LibcFuncs.__close_nocancel : g_LibcFuncs.close;
+
+	return sqfs_close_impl(__func__, fd, real_close);
 }
 
 static void free_sqfs_dir_entry_list(struct SqfsDirEntryNode **dir_entry_list) {

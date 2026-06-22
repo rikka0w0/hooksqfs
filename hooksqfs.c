@@ -192,6 +192,7 @@ static void uninstall_hooks(void)
 	g_LibcFuncs.lseek = g_xTrampoline.lseek;
 	g_LibcFuncs.lseek64 = g_xTrampoline.lseek64;
 	g_LibcFuncs.close = g_xTrampoline.close;
+	g_LibcFuncs.__close_nocancel = g_xTrampoline.__close_nocancel;
 	g_LibcFuncs.opendir = g_xTrampoline.opendir;
 	g_LibcFuncs.readdir = g_xTrampoline.readdir;
 	g_LibcFuncs.closedir = g_xTrampoline.closedir;
@@ -220,6 +221,7 @@ static void install_hooks(void)
 	g_xTrampoline.lseek = g_LibcFuncs.lseek;
 	g_xTrampoline.lseek64 = g_LibcFuncs.lseek64;
 	g_xTrampoline.close = g_LibcFuncs.close;
+	g_xTrampoline.__close_nocancel = g_LibcFuncs.__close_nocancel;
 	g_xTrampoline.opendir = g_LibcFuncs.opendir;
 	g_xTrampoline.readdir = g_LibcFuncs.readdir;
 	g_xTrampoline.closedir = g_LibcFuncs.closedir;
@@ -243,6 +245,10 @@ static void install_hooks(void)
 	     prepare_hook("lseek64", (void **)&g_LibcFuncs.lseek64,
 			  (void *)sqfs_lseek64) != 0) ||
 	    prepare_hook("close", (void **)&g_LibcFuncs.close, (void *)sqfs_close) != 0 ||
+	    (g_xTrampoline.__close_nocancel != NULL &&
+	     (void *)g_xTrampoline.__close_nocancel != (void *)g_xTrampoline.close &&
+	     prepare_hook("__close_nocancel", (void **)&g_LibcFuncs.__close_nocancel,
+			  (void *)sqfs_close_nocancel) != 0) ||
 	    prepare_hook("opendir", (void **)&g_LibcFuncs.opendir, (void *)sqfs_opendir) != 0 ||
 	    prepare_hook("readdir", (void **)&g_LibcFuncs.readdir, (void *)sqfs_readdir) != 0 ||
 	    prepare_hook("closedir", (void **)&g_LibcFuncs.closedir, (void *)sqfs_closedir) != 0 ||
@@ -268,6 +274,7 @@ static void install_hooks(void)
 	log_msg("  lseek=%p\n", (void *)g_LibcFuncs.lseek);
 	log_msg("  lseek64=%p\n", (void *)g_LibcFuncs.lseek64);
 	log_msg("  close=%p\n", (void *)g_LibcFuncs.close);
+	log_msg("  __close_nocancel=%p\n", (void *)g_LibcFuncs.__close_nocancel);
 	log_msg("  opendir=%p\n", (void *)g_LibcFuncs.opendir);
 	log_msg("  readdir=%p\n", (void *)g_LibcFuncs.readdir);
 	log_msg("  closedir=%p\n", (void *)g_LibcFuncs.closedir);

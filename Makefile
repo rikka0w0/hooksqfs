@@ -1,4 +1,4 @@
-.PHONY: clean get-deps get-libsquashfs-i386
+.PHONY: clean get-deps get-libsquashfs-i386 build-funchook64 build-funchook32
 
 BITS ?= 32
 
@@ -11,23 +11,29 @@ else
 endif
 
 PKG_CONFIG_CMD := pkg-config
+SQFS_CFLAGS := $(shell $(PKG_CONFIG_CMD) --cflags libsquashfs1 2>/dev/null)
+SQFS_LIBS := $(shell $(PKG_CONFIG_CMD) --libs libsquashfs1 2>/dev/null)
+
 ifeq ($(BITS),32)
-ifneq ($(wildcard $(CURDIR)/libsquashfs-root),)
-  PKG_CONFIG_CMD := PKG_CONFIG_LIBDIR=$(CURDIR)/libsquashfs-root/usr/lib/i386-linux-gnu/pkgconfig:/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig \
-    pkg-config --define-variable=prefix=$(CURDIR)/libsquashfs-root/usr
+ifneq ($(wildcard $(CURDIR)/libsquashfs-root/usr/include/sqfs/super.h),)
+  SQFS_CFLAGS := -I$(CURDIR)/libsquashfs-root/usr/include
+  SQFS_LIBS := -L$(CURDIR)/libsquashfs-root/usr/lib/i386-linux-gnu -lsquashfs -lpthread
 endif
 endif
 
-LDLIBS = $(shell $(PKG_CONFIG_CMD) --cflags --libs libsquashfs1) \
+LDLIBS = $(SQFS_LIBS) \
 			-Lfunchook/build-x86_$(BITS) -lfunchook
 
 INCLUDES := -I$/uthash/include \
 			-I$/funchook/include
 
 CFLAGS ?= -fPIC -O2 -Wall -Wextra
-CFLAGS_LIB = $(CFLAGS) -shared
+CFLAGS_LIB = $(CFLAGS) $(SQFS_CFLAGS) -shared
 LDFLAGS ?= -Wl,--no-as-needed
-LDFLAGS_LIB = $(LDFLAGS) -ldl
+LDFLAGS_LIB = $(LDFLAGS) -ldl -Wl,-rpath,'$$ORIGIN/funchook/build-x86_$(BITS)'
+ifeq ($(BITS),32)
+  LDFLAGS_LIB += -Wl,-rpath,'$$ORIGIN/libsquashfs-root/usr/lib/i386-linux-gnu'
+endif
 LDFLAGS_TEST = $(LDFLAGS) -Wl,-rpath,funchook/build-x86_$(BITS)
 
 ifeq ($(BITS),32)
@@ -36,8 +42,14 @@ endif
 
 SOURCES := hooksqfs.c logging.c utils.c real.c sqfs_mgr.c
 
-libhooksqfs.so: $(SOURCES)
+libhooksqfs.so: $(SOURCES) funchook/build-x86_$(BITS)/libfunchook.so
 	gcc $(ARCH_CFLAGS) $(CFLAGS_LIB) -o $@ $(SOURCES) $(INCLUDES) $(LDFLAGS_LIB) $(LDLIBS)
+
+funchook/build-x86_64/libfunchook.so:
+	$(MAKE) build-funchook64
+
+funchook/build-x86_32/libfunchook.so:
+	$(MAKE) build-funchook32
 
 test: $(SOURCES) test.c
 	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) test.c $(INCLUDES) $(LDFLAGS_TEST) $(LDLIBS)
@@ -77,7 +89,7 @@ get-libsquashfs-i386:
 		for f in *.deb; do dpkg-deb -x "$$f" .; done
 
 get-deps:
-	sudo apt install -y pkg-config libsquashfs-dev
+	sudo apt install -y build-essential cmake pkg-config gcc-multilib libsquashfs-dev
 	sudo apt install -y linux-libc-dev:i386 zlib1g-dev:i386 liblzma-dev:i386 liblz4-dev:i386 libzstd-dev:i386
 	sudo apt install -y libsquashfs-dev:i386 || \
 		echo "You may need to run 'make get-libsquashfs-i386' to get the 32-bit libsquashfs-dev package"
