@@ -5,13 +5,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-typedef struct PtrHashMapEntry *PtrHashMap;
-
-void map_put(PtrHashMap *map, void *key, void *value);
-void *map_get(PtrHashMap map, void *key);
-int map_delete(PtrHashMap *map, void *key);
-void map_free_all(PtrHashMap *map);
-
 int create_backing_fd(int flags);
 DIR *create_backing_dir(void);
 

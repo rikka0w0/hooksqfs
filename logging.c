@@ -1,7 +1,6 @@
 #define _GNU_SOURCE
 
 #include "logging.h"
-#include "real.h"
 
 #include <errno.h>
 #include <fcntl.h>

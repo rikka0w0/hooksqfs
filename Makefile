@@ -35,13 +35,7 @@ LDFLAGS_LIB = $(LDFLAGS) -ldl -Wl,-rpath,'$$ORIGIN/funchook/build-x86_$(BITS)'
 ifeq ($(BITS),32)
   LDFLAGS_LIB += -Wl,-rpath,'$$ORIGIN/libsquashfs-root/usr/lib/i386-linux-gnu'
 endif
-LDFLAGS_TEST = $(LDFLAGS) -Wl,-rpath,funchook/build-x86_$(BITS)
-
-ifeq ($(BITS),32)
-  LDFLAGS_TEST += -Wl,-rpath,libsquashfs-root/usr/lib/i386-linux-gnu
-endif
-
-SOURCES := hooksqfs.c logging.c utils.c real.c sqfs_mgr.c
+SOURCES := hooksqfs.c logging.c utils.c sqfs_mgr.c
 
 libhooksqfs.so: $(SOURCES) funchook/build-x86_$(BITS)/libfunchook.so
 	gcc $(ARCH_CFLAGS) $(CFLAGS_LIB) -o $@ $(SOURCES) $(INCLUDES) $(LDFLAGS_LIB) $(LDLIBS)
@@ -51,9 +45,6 @@ funchook/build-x86_64/libfunchook.so:
 
 funchook/build-x86_32/libfunchook.so:
 	$(MAKE) build-funchook32
-
-test: $(SOURCES) test.c
-	gcc $(ARCH_CFLAGS) $(CFLAGS) -o $@ $(SOURCES) test.c $(INCLUDES) $(LDFLAGS_TEST) $(LDLIBS)
 
 build-funchook64:
 	rm -rf funchook/build-x86_64/ && mkdir -p funchook/build-x86_64/
@@ -97,4 +88,3 @@ get-deps:
 
 clean:
 	rm -f libhooksqfs.so
-	rm -f test

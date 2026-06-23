@@ -1,8 +1,6 @@
 #define _GNU_SOURCE
 
 #include "utils.h"
-#include "uthash.h"
-#include "logging.h"
 #include "real.h"
 
 #include <dirent.h>
@@ -12,7 +10,6 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -22,17 +19,11 @@
 #define MFD_CLOEXEC 0x0001U
 #endif
 
-struct PtrHashMapEntry {
-	void *key;
-	void *value;
-	UT_hash_handle hh;
-};
-
 DIR *create_backing_dir(void)
 {
 	static atomic_ulong counter;
 	char path[128];
-	int fd;
+	DIR *dir;
 	int saved_errno;
 
 	for (int i = 0; i < 128; i++) {
@@ -48,19 +39,11 @@ DIR *create_backing_dir(void)
 			return NULL;
 		}
 
-		fd = g_LibcFuncs.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+		dir = g_xLibcFuncs.opendir(path);
 		saved_errno = errno;
 		rmdir(path);
 
-		if (fd < 0) {
-			errno = saved_errno;
-			return NULL;
-		}
-
-		DIR *dir = g_LibcFuncs.fdopendir(fd);
 		if (dir == NULL) {
-			saved_errno = errno;
-			syscall(SYS_close, fd);
 			errno = saved_errno;
 			return NULL;
 		}
@@ -136,53 +119,6 @@ int create_backing_fd(int flags)
 	}
 
 	return create_unlinked_tmp_fd(flags);
-}
-
-void map_put(PtrHashMap *map, void *key, void *value) {
-	struct PtrHashMapEntry *entry = NULL;
-
-	HASH_FIND_PTR(*map, &key, entry);
-	if (entry == NULL) {
-		entry = malloc(sizeof(*entry));
-		if (entry == NULL) {
-			exit(1);
-		}
-
-		entry->key = key;
-		HASH_ADD_PTR(*map, key, entry);
-	}
-
-	entry->value = value;
-}
-
-void *map_get(PtrHashMap map, void *key) {
-	struct PtrHashMapEntry *entry = NULL;
-
-	HASH_FIND_PTR(map, &key, entry);
-	return entry ? entry->value : NULL;
-}
-
-int map_delete(PtrHashMap *map, void *key) {
-	struct PtrHashMapEntry *entry = NULL;
-
-	HASH_FIND_PTR(*map, &key, entry);
-	if (entry == NULL) {
-		return 0; /* 没找到 */
-	}
-
-	HASH_DEL(*map, entry);
-	free(entry);
-	return 1; /* 删除成功 */
-}
-
-void map_free_all(PtrHashMap *map) {
-	struct PtrHashMapEntry *entry = NULL;
-	struct PtrHashMapEntry *tmp = NULL;
-
-	HASH_ITER(hh, *map, entry, tmp) {
-		HASH_DEL(*map, entry);
-		free(entry);
-	}
 }
 
 static bool append_str(char *out, size_t out_size, const char *s)

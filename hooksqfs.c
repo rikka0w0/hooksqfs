@@ -1,155 +1,93 @@
 #define _GNU_SOURCE
 
-#include <dirent.h>
-#include <fcntl.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <sys/stat.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-#include <errno.h>
+#include <stdbool.h>
+#include <dlfcn.h>
+#include <stddef.h>
+#include <string.h>
 
 #include "funchook.h"
 #include "logging.h"
 #include "sqfs_mgr.h"
 #include "real.h"
 
+/*
+ * Current libc entry points used by hook implementations. Before hook
+ * preparation these are RTLD_NEXT symbols; funchook_prepare rewrites prepared
+ * entries to trampoline-callable originals.
+ */
+struct LibcFunctions g_xLibcFuncs = {0};
+
+/*
+ * Snapshot of the original libc entry points captured before installing hooks.
+ * It is used to restore g_xLibcFuncs when hooks are uninstalled.
+ */
+struct LibcFunctions g_xTrampoline = {0};
+
 static funchook_t *hooks_funchook;
+static bool g_bLibcFuncsPopulated;
 
-/* ------------------------------------------------------------------ */
-/* open / open64                                                       */
-/* ------------------------------------------------------------------ */
-/*
-static int flags_need_mode(int flags)
+static void vPopulateLibcFuncPtrs(void)
 {
-#ifdef O_TMPFILE
-	if ((flags & O_TMPFILE) == O_TMPFILE)
-		return 1;
-#endif
-	return (flags & O_CREAT) != 0;
+	if (g_bLibcFuncsPopulated)
+		return;
+
+	g_xLibcFuncs.open = dlsym(RTLD_NEXT, "open");
+	// g_xLibcFuncs.open64 = dlsym(RTLD_NEXT, "open64");
+	g_xLibcFuncs.read = dlsym(RTLD_NEXT, "read");
+	g_xLibcFuncs.pread = dlsym(RTLD_NEXT, "pread");
+	g_xLibcFuncs.pread64 = dlsym(RTLD_NEXT, "pread64");
+	g_xLibcFuncs.lseek = dlsym(RTLD_NEXT, "lseek");
+	g_xLibcFuncs.lseek64 = dlsym(RTLD_NEXT, "lseek64");
+	// g_xLibcFuncs.write = dlsym(RTLD_NEXT, "write");
+	g_xLibcFuncs.close = dlsym(RTLD_NEXT, "close");
+	g_xLibcFuncs.__close_nocancel = dlsym(RTLD_NEXT, "__close_nocancel");
+	if (g_xLibcFuncs.__close_nocancel == NULL) {
+		log_msg("__close_nocancel not found; falling back to close\n");
+		g_xLibcFuncs.__close_nocancel = g_xLibcFuncs.close;
+	}
+	// g_xLibcFuncs.openat = dlsym(RTLD_NEXT, "openat");
+	// g_xLibcFuncs.openat64 = dlsym(RTLD_NEXT, "openat64");
+	// g_xLibcFuncs.fopen = dlsym(RTLD_NEXT, "fopen");
+	// g_xLibcFuncs.fopen64 = dlsym(RTLD_NEXT, "fopen64");
+	g_xLibcFuncs.opendir = dlsym(RTLD_NEXT, "opendir");
+	// g_xLibcFuncs.opendir64 = dlsym(RTLD_NEXT, "opendir64");
+	// g_xLibcFuncs.fdopendir = dlsym(RTLD_NEXT, "fdopendir");
+	g_xLibcFuncs.readdir = dlsym(RTLD_NEXT, "readdir");
+	// g_xLibcFuncs.readdir64 = dlsym(RTLD_NEXT, "readdir64");
+	// g_xLibcFuncs.readdir_r = dlsym(RTLD_NEXT, "readdir_r");
+	// g_xLibcFuncs.readdir64_r = dlsym(RTLD_NEXT, "readdir64_r");
+	g_xLibcFuncs.closedir = dlsym(RTLD_NEXT, "closedir");
+	// g_xLibcFuncs.scandir = dlsym(RTLD_NEXT, "scandir");
+	g_xLibcFuncs.access = dlsym(RTLD_NEXT, "access");
+	// g_xLibcFuncs.faccessat = dlsym(RTLD_NEXT, "faccessat");
+	g_xLibcFuncs.__xstat = dlsym(RTLD_NEXT, "__xstat");
+	// g_xLibcFuncs.__lxstat = dlsym(RTLD_NEXT, "__lxstat");
+	// g_xLibcFuncs.__fxstat = dlsym(RTLD_NEXT, "__fxstat");
+	// g_xLibcFuncs.__xstat64 = dlsym(RTLD_NEXT, "__xstat64");
+	// g_xLibcFuncs.__lxstat64 = dlsym(RTLD_NEXT, "__lxstat64");
+	// g_xLibcFuncs.__fxstat64 = dlsym(RTLD_NEXT, "__fxstat64");
+
+	g_bLibcFuncsPopulated = true;
 }
 
-int open(const char *pathname, int flags, ...)
+_Static_assert(sizeof(struct LibcFunctions) % sizeof(void *) == 0,
+	       "LibcFunctions must contain pointer-sized fields only");
+
+static bool bLibcFuncPtrsLoaded(const struct LibcFunctions *funcs)
 {
-	mode_t mode = 0;
-	int has_mode = flags_need_mode(flags);
+	const unsigned char *bytes = (const unsigned char *)funcs;
+	size_t count = sizeof(*funcs) / sizeof(void *);
 
-	if (has_mode) {
-		va_list ap;
-		va_start(ap, flags);
-		mode = (mode_t)va_arg(ap, int);
-		va_end(ap);
+	for (size_t i = 0; i < count; i++) {
+		void *func = NULL;
 
-		int sqfs_fd = sqfs_open(pathname, flags, mode);
-		if (sqfs_fd >= 0) {
-			log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o, sqfs_fd=%d\n",
-					pathname , flags, mode, sqfs_fd);
-			return sqfs_fd;
-		}
-		if (errno != ENOENT)
-			return -1;
-
-		log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o\n",
-				pathname , flags, mode);
-
-		return g_LibcFuncs.open(pathname, flags, mode);
-	} else {
-		int sqfs_fd = sqfs_open(pathname, flags);
-		if (sqfs_fd >= 0) {
-			log_hook(__func__, "path=\"%s\", flags=0x%x, sqfs_fd=%d\n",
-					pathname , flags, sqfs_fd);
-			return sqfs_fd;
-		}
-		if (errno != ENOENT)
-			return -1;
-
-		log_hook(__func__, "path=\"%s\", flags=0x%x\n",
-				pathname , flags);
-
-		return g_LibcFuncs.open(pathname, flags);
+		memcpy(&func, bytes + i * sizeof(func), sizeof(func));
+		if (func == NULL)
+			return false;
 	}
+
+	return true;
 }
-
-int open64(const char *pathname, int flags, ...)
-{
-	mode_t mode = 0;
-	int has_mode = flags_need_mode(flags);
-
-	if (g_LibcFuncs.open64 == NULL) {
-		errno = ENOSYS;
-		return -1;
-	}
-
-	if (has_mode) {
-		va_list ap;
-		va_start(ap, flags);
-		mode = (mode_t)va_arg(ap, int);
-		va_end(ap);
-
-		int sqfs_fd = sqfs_open(pathname, flags, mode);
-		if (sqfs_fd >= 0) {
-			log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o, sqfs_fd=%d\n",
-					pathname , flags, mode, sqfs_fd);
-			return sqfs_fd;
-		}
-		if (errno != ENOENT)
-			return -1;
-
-		log_hook(__func__, "path=\"%s\", flags=0x%x, mode=%04o\n",
-				pathname , flags, mode);
-
-		return g_LibcFuncs.open64(pathname, flags, mode);
-	} else {
-		int sqfs_fd = sqfs_open(pathname, flags);
-		if (sqfs_fd >= 0) {
-			log_hook(__func__, "path=\"%s\", flags=0x%x, sqfs_fd=%d\n",
-					pathname , flags, sqfs_fd);
-			return sqfs_fd;
-		}
-		if (errno != ENOENT)
-			return -1;
-
-		log_hook(__func__, "path=\"%s\", flags=0x%x\n",
-				pathname , flags);
-
-		return g_LibcFuncs.open64(pathname, flags);
-	}
-}
-*/
-
-/* ------------------------------------------------------------------ */
-/* scandir                                                            */
-/* ------------------------------------------------------------------ */
-
-/*
-int scandir(const char *dirp, struct dirent ***namelist,
-	    int (*filter)(const struct dirent *),
-	    int (*compar)(const struct dirent **, const struct dirent **))
-{
-	int ret = g_LibcFuncs.scandir(dirp, namelist, filter, compar);
-	int saved_errno = errno;
-
-	log_msg("scandir: path=\"%s\", ret=%d\n", dirp, ret);
-	if (ret > 0 && *namelist != NULL) {
-		for (int i = 0; i < ret; i++) {
-			struct dirent *entry = (*namelist)[i];
-
-			log_msg("scandir: [%d] name=\"%s\", type=%u, ino=%llu\n",
-				i,
-				entry ? entry->d_name : "(null)",
-				entry ? (unsigned int)entry->d_type : 0,
-				entry ? (unsigned long long)entry->d_ino : 0);
-		}
-	} else if (ret == 0) {
-		log_msg("scandir: <empty>\n");
-	} else {
-		log_msg("scandir: <unavailable>\n");
-	}
-
-	errno = saved_errno;
-	return ret;
-}
-*/
 
 /* ------------------------------------------------------------------ */
 /* funchook install / uninstall                                       */
@@ -185,48 +123,19 @@ static void uninstall_hooks(void)
 		log_msg("funchook_destroy failed\n");
 
 	hooks_funchook = NULL;
-	g_LibcFuncs.open = g_xTrampoline.open;
-	g_LibcFuncs.read = g_xTrampoline.read;
-	g_LibcFuncs.pread = g_xTrampoline.pread;
-	g_LibcFuncs.pread64 = g_xTrampoline.pread64;
-	g_LibcFuncs.lseek = g_xTrampoline.lseek;
-	g_LibcFuncs.lseek64 = g_xTrampoline.lseek64;
-	g_LibcFuncs.close = g_xTrampoline.close;
-	g_LibcFuncs.__close_nocancel = g_xTrampoline.__close_nocancel;
-	g_LibcFuncs.opendir = g_xTrampoline.opendir;
-	g_LibcFuncs.readdir = g_xTrampoline.readdir;
-	g_LibcFuncs.closedir = g_xTrampoline.closedir;
-	g_LibcFuncs.access = g_xTrampoline.access;
-	g_LibcFuncs.__xstat = g_xTrampoline.__xstat;
+	g_xLibcFuncs = g_xTrampoline;
 }
 
 static void install_hooks(void)
 {
 	int rv;
 
-	if (g_LibcFuncs.open == NULL || g_LibcFuncs.read == NULL ||
-	    g_LibcFuncs.pread == NULL || g_LibcFuncs.lseek == NULL ||
-	    g_LibcFuncs.close == NULL ||
-	    g_LibcFuncs.opendir == NULL || g_LibcFuncs.readdir == NULL ||
-	    g_LibcFuncs.closedir == NULL || g_LibcFuncs.access == NULL ||
-	    g_LibcFuncs.__xstat == NULL) {
+	if (!bLibcFuncPtrsLoaded(&g_xLibcFuncs)) {
 		log_msg("hook install failed: missing real function\n");
 		return;
 	}
 
-	g_xTrampoline.open = g_LibcFuncs.open;
-	g_xTrampoline.read = g_LibcFuncs.read;
-	g_xTrampoline.pread = g_LibcFuncs.pread;
-	g_xTrampoline.pread64 = g_LibcFuncs.pread64;
-	g_xTrampoline.lseek = g_LibcFuncs.lseek;
-	g_xTrampoline.lseek64 = g_LibcFuncs.lseek64;
-	g_xTrampoline.close = g_LibcFuncs.close;
-	g_xTrampoline.__close_nocancel = g_LibcFuncs.__close_nocancel;
-	g_xTrampoline.opendir = g_LibcFuncs.opendir;
-	g_xTrampoline.readdir = g_LibcFuncs.readdir;
-	g_xTrampoline.closedir = g_LibcFuncs.closedir;
-	g_xTrampoline.access = g_LibcFuncs.access;
-	g_xTrampoline.__xstat = g_LibcFuncs.__xstat;
+	g_xTrampoline = g_xLibcFuncs;
 
 	hooks_funchook = funchook_create();
 	if (hooks_funchook == NULL) {
@@ -234,26 +143,26 @@ static void install_hooks(void)
 		return;
 	}
 
-	if (prepare_hook("open", (void **)&g_LibcFuncs.open, (void *)sqfs_open) != 0 ||
-	    prepare_hook("read", (void **)&g_LibcFuncs.read, (void *)sqfs_read) != 0 ||
-	    prepare_hook("pread", (void **)&g_LibcFuncs.pread, (void *)sqfs_pread) != 0 ||
-	    prepare_hook("lseek", (void **)&g_LibcFuncs.lseek, (void *)sqfs_lseek) != 0 ||
-	    ((void *)g_LibcFuncs.pread64 != (void *)g_LibcFuncs.pread &&
-	     prepare_hook("pread64", (void **)&g_LibcFuncs.pread64,
+	if (prepare_hook("open", (void **)&g_xLibcFuncs.open, (void *)sqfs_open) != 0 ||
+	    prepare_hook("read", (void **)&g_xLibcFuncs.read, (void *)sqfs_read) != 0 ||
+	    prepare_hook("pread", (void **)&g_xLibcFuncs.pread, (void *)sqfs_pread) != 0 ||
+	    prepare_hook("lseek", (void **)&g_xLibcFuncs.lseek, (void *)sqfs_lseek) != 0 ||
+	    ((void *)g_xLibcFuncs.pread64 != (void *)g_xLibcFuncs.pread &&
+	     prepare_hook("pread64", (void **)&g_xLibcFuncs.pread64,
 			  (void *)sqfs_pread64) != 0) ||
-	    ((void *)g_LibcFuncs.lseek64 != (void *)g_LibcFuncs.lseek &&
-	     prepare_hook("lseek64", (void **)&g_LibcFuncs.lseek64,
+	    ((void *)g_xLibcFuncs.lseek64 != (void *)g_xLibcFuncs.lseek &&
+	     prepare_hook("lseek64", (void **)&g_xLibcFuncs.lseek64,
 			  (void *)sqfs_lseek64) != 0) ||
-	    prepare_hook("close", (void **)&g_LibcFuncs.close, (void *)sqfs_close) != 0 ||
+	    prepare_hook("close", (void **)&g_xLibcFuncs.close, (void *)sqfs_close) != 0 ||
 	    (g_xTrampoline.__close_nocancel != NULL &&
 	     (void *)g_xTrampoline.__close_nocancel != (void *)g_xTrampoline.close &&
-	     prepare_hook("__close_nocancel", (void **)&g_LibcFuncs.__close_nocancel,
+	     prepare_hook("__close_nocancel", (void **)&g_xLibcFuncs.__close_nocancel,
 			  (void *)sqfs_close_nocancel) != 0) ||
-	    prepare_hook("opendir", (void **)&g_LibcFuncs.opendir, (void *)sqfs_opendir) != 0 ||
-	    prepare_hook("readdir", (void **)&g_LibcFuncs.readdir, (void *)sqfs_readdir) != 0 ||
-	    prepare_hook("closedir", (void **)&g_LibcFuncs.closedir, (void *)sqfs_closedir) != 0 ||
-	    prepare_hook("access", (void **)&g_LibcFuncs.access, (void *)sqfs_access) != 0 ||
-	    prepare_hook("__xstat", (void **)&g_LibcFuncs.__xstat, (void *)sqfs_xstat) != 0) {
+	    prepare_hook("opendir", (void **)&g_xLibcFuncs.opendir, (void *)sqfs_opendir) != 0 ||
+	    prepare_hook("readdir", (void **)&g_xLibcFuncs.readdir, (void *)sqfs_readdir) != 0 ||
+	    prepare_hook("closedir", (void **)&g_xLibcFuncs.closedir, (void *)sqfs_closedir) != 0 ||
+	    prepare_hook("access", (void **)&g_xLibcFuncs.access, (void *)sqfs_access) != 0 ||
+	    prepare_hook("__xstat", (void **)&g_xLibcFuncs.__xstat, (void *)sqfs_xstat) != 0) {
 		uninstall_hooks();
 		return;
 	}
@@ -267,19 +176,19 @@ static void install_hooks(void)
 	}
 
 	log_msg("hooks installed:\n");
-	log_msg("  open=%p\n", (void *)g_LibcFuncs.open);
-	log_msg("  read=%p\n", (void *)g_LibcFuncs.read);
-	log_msg("  pread=%p\n", (void *)g_LibcFuncs.pread);
-	log_msg("  pread64=%p\n", (void *)g_LibcFuncs.pread64);
-	log_msg("  lseek=%p\n", (void *)g_LibcFuncs.lseek);
-	log_msg("  lseek64=%p\n", (void *)g_LibcFuncs.lseek64);
-	log_msg("  close=%p\n", (void *)g_LibcFuncs.close);
-	log_msg("  __close_nocancel=%p\n", (void *)g_LibcFuncs.__close_nocancel);
-	log_msg("  opendir=%p\n", (void *)g_LibcFuncs.opendir);
-	log_msg("  readdir=%p\n", (void *)g_LibcFuncs.readdir);
-	log_msg("  closedir=%p\n", (void *)g_LibcFuncs.closedir);
-	log_msg("  access=%p\n", (void *)g_LibcFuncs.access);
-	log_msg("  __xstat=%p\n", (void *)g_LibcFuncs.__xstat);
+	log_msg("  open=%p\n", (void *)g_xLibcFuncs.open);
+	log_msg("  read=%p\n", (void *)g_xLibcFuncs.read);
+	log_msg("  pread=%p\n", (void *)g_xLibcFuncs.pread);
+	log_msg("  pread64=%p\n", (void *)g_xLibcFuncs.pread64);
+	log_msg("  lseek=%p\n", (void *)g_xLibcFuncs.lseek);
+	log_msg("  lseek64=%p\n", (void *)g_xLibcFuncs.lseek64);
+	log_msg("  close=%p\n", (void *)g_xLibcFuncs.close);
+	log_msg("  __close_nocancel=%p\n", (void *)g_xLibcFuncs.__close_nocancel);
+	log_msg("  opendir=%p\n", (void *)g_xLibcFuncs.opendir);
+	log_msg("  readdir=%p\n", (void *)g_xLibcFuncs.readdir);
+	log_msg("  closedir=%p\n", (void *)g_xLibcFuncs.closedir);
+	log_msg("  access=%p\n", (void *)g_xLibcFuncs.access);
+	log_msg("  __xstat=%p\n", (void *)g_xLibcFuncs.__xstat);
 }
 
 /* ------------------------------------------------------------------ */

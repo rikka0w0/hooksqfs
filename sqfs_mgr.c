@@ -501,7 +501,7 @@ int sqfs_xstat(int ver, const char *pathname, struct stat *buf) {
 	int saved_errno;
 
 	// Try the real path first
-	if (g_LibcFuncs.__xstat(ver, pathname, buf) == 0) {
+	if (g_xLibcFuncs.__xstat(ver, pathname, buf) == 0) {
 		return 0;
 	}
 
@@ -546,9 +546,9 @@ int sqfs_open(const char *pathname, int flags, ...) {
 		mode = (mode_t)va_arg(ap, int);
 		va_end(ap);
 
-		fd = g_LibcFuncs.open(pathname, flags, mode);
+		fd = g_xLibcFuncs.open(pathname, flags, mode);
 	} else {
-		fd = g_LibcFuncs.open(pathname, flags);
+		fd = g_xLibcFuncs.open(pathname, flags);
 	}
 
 	if (fd >= 0)
@@ -594,7 +594,7 @@ int sqfs_open(const char *pathname, int flags, ...) {
 	return fd;
 
 error_and_free_fd:
-	g_LibcFuncs.close(fd);
+	g_xLibcFuncs.close(fd);
 
 error_and_free_inode:
 	sqfs_free(inode);
@@ -616,7 +616,7 @@ ssize_t sqfs_read(int fd, void *buf, size_t count)
 	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
 	if (found == NULL) {
 		sqfs_unlock();
-		return g_LibcFuncs.read(fd, buf, count);
+		return g_xLibcFuncs.read(fd, buf, count);
 	}
 
 	int ret = sqfs_data_reader_read(
@@ -691,7 +691,7 @@ ssize_t sqfs_pread(int fd, void *buf, size_t count, off_t offset)
 	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
 	if (found == NULL) {
 		sqfs_unlock();
-		return g_LibcFuncs.pread(fd, buf, count, offset);
+		return g_xLibcFuncs.pread(fd, buf, count, offset);
 	}
 
 	result = sqfs_pread_mapped(__func__, found, buf, count, (off64_t)offset);
@@ -708,8 +708,8 @@ ssize_t sqfs_pread64(int fd, void *buf, size_t count, off64_t offset)
 	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
 	if (found == NULL) {
 		sqfs_unlock();
-		if (g_LibcFuncs.pread64 != NULL)
-			return g_LibcFuncs.pread64(fd, buf, count, offset);
+		if (g_xLibcFuncs.pread64 != NULL)
+			return g_xLibcFuncs.pread64(fd, buf, count, offset);
 
 		errno = ENOSYS;
 		return -1;
@@ -831,7 +831,7 @@ off_t sqfs_lseek(int fd, off_t offset, int whence)
 	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
 	if (found == NULL) {
 		sqfs_unlock();
-		return g_LibcFuncs.lseek(fd, offset, whence);
+		return g_xLibcFuncs.lseek(fd, offset, whence);
 	}
 
 	if (sqfs_lseek_mapped(__func__, found, (off64_t)offset, whence,
@@ -856,8 +856,8 @@ off64_t sqfs_lseek64(int fd, off64_t offset, int whence)
 	HASH_FIND_INT(g_xSqfsMgr.fd_map, &fd, found);
 	if (found == NULL) {
 		sqfs_unlock();
-		if (g_LibcFuncs.lseek64 != NULL)
-			return g_LibcFuncs.lseek64(fd, offset, whence);
+		if (g_xLibcFuncs.lseek64 != NULL)
+			return g_xLibcFuncs.lseek64(fd, offset, whence);
 
 		errno = ENOSYS;
 		return (off64_t)-1;
@@ -913,13 +913,13 @@ static int sqfs_close_impl(const char *func, int fd, int (*real_close)(int))
 
 int sqfs_close(int fd)
 {
-	return sqfs_close_impl(__func__, fd, g_LibcFuncs.close);
+	return sqfs_close_impl(__func__, fd, g_xLibcFuncs.close);
 }
 
 int sqfs_close_nocancel(int fd)
 {
-	int (*real_close)(int) = g_LibcFuncs.__close_nocancel != NULL ?
-		g_LibcFuncs.__close_nocancel : g_LibcFuncs.close;
+	int (*real_close)(int) = g_xLibcFuncs.__close_nocancel != NULL ?
+		g_xLibcFuncs.__close_nocancel : g_xLibcFuncs.close;
 
 	return sqfs_close_impl(__func__, fd, real_close);
 }
@@ -983,9 +983,9 @@ int sqfs_access(const char *pathname, int mode)
 	int saved_errno;
 	struct stat st = {0};
 
-	if (g_LibcFuncs.access(pathname, mode) == 0) {
+	if (g_xLibcFuncs.access(pathname, mode) == 0) {
 		if (!sqfs_check_path_then_convert(pathname, NULL, 0)) {
-			log_hook(__func__, "granted: g_LibcFuncs.access(path=\"%s\", mode=%d)\n",
+			log_hook(__func__, "granted: g_xLibcFuncs.access(path=\"%s\", mode=%d)\n",
 				pathname, mode);
 		}
 		return 0;
@@ -1038,7 +1038,7 @@ return_err:
 }
 
 DIR * sqfs_opendir(const char *name) {
-	DIR *underlying_dir = g_LibcFuncs.opendir(name);
+	DIR *underlying_dir = g_xLibcFuncs.opendir(name);
 	bool is_real_dir = underlying_dir != NULL;
 	DIR *result = NULL;
 
@@ -1143,7 +1143,7 @@ out_unlock_only:
 	saved_errno = errno;
 	sqfs_unlock();
 	if (underlying_dir != NULL && result == NULL) {
-		g_LibcFuncs.closedir(underlying_dir);
+		g_xLibcFuncs.closedir(underlying_dir);
 		errno = saved_errno;
 	}
 	return result;
@@ -1174,11 +1174,11 @@ struct dirent *sqfs_readdir(DIR *dirp) {
 	// it must be a real directory that sqfs_opendir didn't open, fallback.
 	if (found == NULL) {
 		sqfs_unlock();
-		return g_LibcFuncs.readdir(dirp);
+		return g_xLibcFuncs.readdir(dirp);
 	}
 
 	if (found->is_real_dir) {
-		struct dirent *result = g_LibcFuncs.readdir(dirp);
+		struct dirent *result = g_xLibcFuncs.readdir(dirp);
 		if (result != NULL) {
 			dump_dirent("real_dir:", result);
 			sqfs_unlock();
@@ -1222,7 +1222,7 @@ int sqfs_closedir(DIR *dir) {
 	// it must be a real directory that sqfs_opendir didn't open, fallback.
 	if (found == NULL) {
 		sqfs_unlock();
-		return g_LibcFuncs.closedir(dir);
+		return g_xLibcFuncs.closedir(dir);
 	}
 
 	HASH_DEL(g_xSqfsMgr.dir_map, found);
@@ -1234,7 +1234,7 @@ int sqfs_closedir(DIR *dir) {
 	log_hook(__func__, "dir=%p\n", dir);
 
 	sqfs_unlock();
-	return g_LibcFuncs.closedir(underlying_dir);
+	return g_xLibcFuncs.closedir(underlying_dir);
 }
 
 
