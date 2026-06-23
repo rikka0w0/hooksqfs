@@ -22,13 +22,14 @@ endif
 endif
 
 LDLIBS = $(SQFS_LIBS) \
+			-pthread \
 			-Lfunchook/build-x86_$(BITS) -lfunchook
 
 INCLUDES := -I$/uthash/include \
 			-I$/funchook/include
 
 CFLAGS ?= -fPIC -O2 -Wall -Wextra
-CFLAGS_LIB = $(CFLAGS) $(SQFS_CFLAGS) -shared
+CFLAGS_LIB = $(CFLAGS) -pthread $(SQFS_CFLAGS) -shared
 LDFLAGS ?= -Wl,--no-as-needed
 LDFLAGS_LIB = $(LDFLAGS) -ldl -Wl,-rpath,'$$ORIGIN/funchook/build-x86_$(BITS)'
 ifeq ($(BITS),32)

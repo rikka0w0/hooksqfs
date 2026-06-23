@@ -289,7 +289,8 @@ static void install_hooks(void)
 __attribute__((constructor))
 static void hooksqfs_init(void)
 {
-	// This has to be the first step
+	sqfs_mutex_init_once();
+
 	vPopulateLibcFuncPtrs();
 
 	sqfs_mgr_load_image();

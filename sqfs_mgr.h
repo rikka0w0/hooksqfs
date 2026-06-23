@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-void sqfs_mgr_unload_image(void);
+void sqfs_mutex_init_once(void);
 bool sqfs_mgr_load_image(void);
 int sqfs_open(const char *pathname, int flags, ...);
 ssize_t sqfs_read(int fd, void *buf, size_t count);

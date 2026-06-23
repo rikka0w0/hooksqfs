@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,13 +30,13 @@ struct PtrHashMapEntry {
 
 DIR *create_backing_dir(void)
 {
-	static unsigned long counter;
+	static atomic_ulong counter;
 	char path[128];
 	int fd;
 	int saved_errno;
 
 	for (int i = 0; i < 128; i++) {
-		unsigned long id = counter++;
+		unsigned long id = atomic_fetch_add_explicit(&counter, 1, memory_order_relaxed);
 
 		snprintf(path, sizeof(path), "/tmp/hooksqfs-dir-%ld-%lu",
 			 (long)getpid(), id);
@@ -90,7 +91,7 @@ static int create_memfd(int flags)
 
 static int create_unlinked_tmp_fd(int flags)
 {
-	static unsigned long counter;
+	static atomic_ulong counter;
 	char path[128];
 	int fd = -1;
 	int open_flags = O_RDWR | O_CREAT | O_EXCL;
@@ -102,7 +103,7 @@ static int create_unlinked_tmp_fd(int flags)
 #endif
 
 	for (int i = 0; i < 128; i++) {
-		unsigned long id = counter++;
+		unsigned long id = atomic_fetch_add_explicit(&counter, 1, memory_order_relaxed);
 
 		snprintf(path, sizeof(path), "/tmp/hooksqfs-%ld-%lu",
 			 (long)getpid(), id);
