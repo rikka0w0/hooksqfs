@@ -31,27 +31,6 @@
 #include "uthash.h"
 #include "utlist.h"
 
-void print_callstack(void) {
-    void *buffer[64];
-
-    int n = backtrace(buffer, 64);
-    char **symbols = backtrace_symbols(buffer, n);
-
-    if (symbols == NULL) {
-        perror("backtrace_symbols");
-        return;
-    }
-
-    log_msg("Call stack:\n");
-    for (int i = 0; i < n; i++) {
-        log_msg("  #%d %s\n", i, symbols[i]);
-    }
-
-    free(symbols);
-}
-
-void sqfs_util_log_failure(const char* func, int err);
-
 struct SqfsDirEntryNode {
 	sqfs_inode_generic_t *inode;
 	struct dirent dirent;
@@ -205,7 +184,7 @@ const char *sqfs_error_string(int err)
 	}
 }
 
-void sqfs_util_log_failure(const char* func, int err)
+static void sqfs_util_log_failure(const char* func, int err)
 {
 	log_msg("libsquashfs %s returned %d (%s)\n", func, err, sqfs_error_string(err));
 }
@@ -340,24 +319,23 @@ static int sqfs_check_path_then_convert(const char *pathname, char* relative_out
 	return 0;
 }
 
-static int sqfs_find_inode(const char *relative, sqfs_inode_generic_t **inode_out)
+static sqfs_inode_generic_t *sqfs_find_inode(const char *relative)
 {
-	if (inode_out == NULL) {
+	if (relative == NULL) {
 		errno = EFAULT;
-		return -1;
+		return NULL;
 	}
-	*inode_out = NULL;
 
 	if (!sqfs_mgr_loaded_locked()) {
 		errno = ENOENT;
-		return -1;
+		return NULL;
 	}
 
 	sqfs_dir_reader_t *dir_reader = sqfs_dir_reader_create(
 		&g_xSqfsMgr.super, g_xSqfsMgr.compressor, g_xSqfsMgr.file, 0);
 	if (dir_reader == NULL) {
 		errno = ENOMEM;
-		return -1;
+		return NULL;
 	}
 
 	sqfs_inode_generic_t *inode = NULL;
@@ -370,13 +348,11 @@ static int sqfs_find_inode(const char *relative, sqfs_inode_generic_t **inode_ou
 
 	sqfs_destroy(dir_reader);
 	if (ret != 0) {
-		log_msg("sqfs_find_inode cannot find \"%s\": %d (%s)\n", relative, ret, sqfs_error_string(ret));
 		errno = errno_from_sqfs(ret);
-		return -1;
+		return NULL;
 	}
 
-	*inode_out = inode;
-	return 0;
+	return inode;
 }
 
 static mode_t sqfs_inode_mode(const sqfs_inode_generic_t *inode)
@@ -484,11 +460,9 @@ static void sqfs_fill_stat(const sqfs_inode_generic_t *inode, struct stat *buf)
 
 static bool sqfs_stat_impl(const char *relative, struct stat *buf)
 {
-	sqfs_inode_generic_t *inode = NULL;
-	if (sqfs_find_inode(relative, &inode) != 0) {
-		log_hook(__func__, "sqfs_stat could not find inode for path \"%s\"\n", relative);
+	sqfs_inode_generic_t *inode = sqfs_find_inode(relative);
+	if (inode == NULL)
 		return false;
-	}
 	// log_hook(__func__, "sqfs_stat found inode for path \"%s\"\n", relative);
 
 	sqfs_fill_stat(inode, buf);
@@ -563,10 +537,13 @@ int sqfs_open(const char *pathname, int flags, ...) {
 
 	sqfs_lock();
 
-	sqfs_inode_generic_t *inode = NULL;
-	sqfs_find_inode(relative, &inode);
+	sqfs_inode_generic_t *inode = sqfs_find_inode(relative);
 	if (inode == NULL) {
+		int find_errno = errno;
 		sqfs_unlock();
+		log_hook(__func__, "sqfs_find_inode(\"%s\") failed: errno=%d\n",
+			relative, find_errno);
+		errno = find_errno;
 		return -1;
 	}
 
@@ -1076,8 +1053,8 @@ DIR * sqfs_opendir(const char *name) {
 		goto out_unlock_only;
 	}
 
-	sqfs_inode_generic_t *inode = NULL;
-	if (sqfs_find_inode(relative, &inode) != 0) {
+	sqfs_inode_generic_t *inode = sqfs_find_inode(relative);
+	if (inode == NULL) {
 		int saved_errno = errno;
 		if (is_real_dir) {
 			// The given path is under prefix, but belong to the real filesystem
@@ -1166,6 +1143,7 @@ static void dump_dirent(const char* prefix, const struct dirent *entry) {
 
 struct dirent *sqfs_readdir(DIR *dirp) {
 	struct DirMapEntry *found = NULL;
+	bool log_readdir = log_enabled(__func__);
 
 	sqfs_lock();
 	HASH_FIND_PTR(g_xSqfsMgr.dir_map, &dirp, found);
@@ -1180,14 +1158,16 @@ struct dirent *sqfs_readdir(DIR *dirp) {
 	if (found->is_real_dir) {
 		struct dirent *result = g_xLibcFuncs.readdir(dirp);
 		if (result != NULL) {
-			dump_dirent("real_dir:", result);
+			if (log_readdir)
+				dump_dirent("real_dir:", result);
 			sqfs_unlock();
 			return result;
 		}
 	}
 
 	if (found->dir_entry_list_reached_end) {
-		dump_dirent("sqfs_dir:", NULL);
+		if (log_readdir)
+			dump_dirent("sqfs_dir:", NULL);
 		sqfs_unlock();
 		return NULL;
 	}
@@ -1206,7 +1186,8 @@ struct dirent *sqfs_readdir(DIR *dirp) {
 	if (found->dir_entry_current == NULL)
 		found->dir_entry_list_reached_end = true;
 
-	dump_dirent("sqfs_dir:", result);
+	if (log_readdir)
+		dump_dirent("sqfs_dir:", result);
 
 	sqfs_unlock();
 	return result;

@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,20 +12,32 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-#define WRITE_LOG_TO_FILE 1
+static pthread_once_t g_xLogOutputOnce = PTHREAD_ONCE_INIT;
+static int g_iLogOutputFd = -1;
 
-#if WRITE_LOG_TO_FILE
-static void write_log_file(const char *buf, size_t len)
+static void log_output_init_once(void)
 {
-	int fd = (int)syscall(SYS_openat, AT_FDCWD, "/tmp/log.txt",
-			      O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
-			      0644);
-	if (fd < 0)
+	const char *path = getenv("HOOKSQFS_LOG_FILE");
+
+	if (path && path[0]) {
+		g_iLogOutputFd = (int)syscall(SYS_openat, AT_FDCWD, path,
+					      O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+					      0644);
+		return;
+	}
+
+	g_iLogOutputFd = STDOUT_FILENO;
+}
+
+static void log_write(const char *buf, size_t len)
+{
+	pthread_once(&g_xLogOutputOnce, log_output_init_once);
+	if (g_iLogOutputFd < 0)
 		return;
 
 	const char *p = buf;
 	while (len > 0) {
-		ssize_t written = (ssize_t)syscall(SYS_write, fd, p, len);
+		ssize_t written = (ssize_t)syscall(SYS_write, g_iLogOutputFd, p, len);
 		if (written < 0) {
 			if (errno == EINTR)
 				continue;
@@ -36,19 +49,16 @@ static void write_log_file(const char *buf, size_t len)
 		p += written;
 		len -= (size_t)written;
 	}
-
-	syscall(SYS_close, fd);
 }
-#endif
 
-static int should_log(const char *func_name)
+int log_enabled(const char *func_name)
 {
-	const char *exclude = getenv("HOOKSQFS_LOG_EXCLUDE");
-	if (!exclude || !func_name || !*func_name)
-		return 1;
+	const char *include = getenv("HOOKSQFS_LOG_INCLUDE");
+	if (!include || !*include)
+		return 0;
 
-	const char *p = exclude;
-	size_t name_len = strlen(func_name);
+	const char *p = include;
+	size_t name_len = func_name ? strlen(func_name) : 0;
 
 	while (*p) {
 		while (*p == ' ' || *p == '\t')
@@ -62,19 +72,31 @@ static int should_log(const char *func_name)
 		while (token_len > 0 && (start[token_len - 1] == ' ' || start[token_len - 1] == '\t'))
 			token_len--;
 
-		if (token_len == name_len && strncmp(start, func_name, name_len) == 0)
-			return 0;
+		if (token_len == 3 && strncmp(start, "ALL", 3) == 0)
+			return 1;
+
+		if (func_name && *func_name && token_len == name_len &&
+		    strncmp(start, func_name, name_len) == 0)
+			return 1;
+
+		if (func_name && strncmp(func_name, "sqfs_", 5) == 0) {
+			const char *short_name = func_name + 5;
+			size_t short_len = strlen(short_name);
+
+			if (token_len == short_len && strncmp(start, short_name, short_len) == 0)
+				return 1;
+		}
 
 		if (*p == ',')
 			p++;
 	}
 
-	return 1;
+	return 0;
 }
 
 void log_hook(const char *func_name, const char *fmt, ...)
 {
-	if (!should_log(func_name))
+	if (!log_enabled(func_name))
 		return;
 
 	char buf[1024];
@@ -98,11 +120,7 @@ void log_hook(const char *func_name, const char *fmt, ...)
 	if (total > (int)sizeof(buf))
 		total = sizeof(buf);
 
-#if WRITE_LOG_TO_FILE
-	write_log_file(buf, (size_t)total);
-#else
-	fputs(buf, stdout);
-#endif
+	log_write(buf, (size_t)total);
 }
 
 void log_msg(const char *fmt, ...)
@@ -120,9 +138,5 @@ void log_msg(const char *fmt, ...)
 	if (n > (int)sizeof(buf))
 		n = sizeof(buf);
 
-#if WRITE_LOG_TO_FILE
-	write_log_file(buf, (size_t)n);
-#else
-	fputs(buf, stdout);
-#endif
+	log_write(buf, (size_t)n);
 }

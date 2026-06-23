@@ -19,6 +19,7 @@ mksquashfs /tmp/sqfs-root output.sqfs -noappend
 LD_PRELOAD=/tmp/hook/libhooksqfs.so \
 LD_LIBRARY_PATH=/tmp/hook/libsquashfs-root/usr/lib/i386-linux-gnu \
 HOOKSQFS_FILE=output.sqfs \
-HOOKSQFS_LOG_EXCLUDE=access,readdir,readdir64,closedir \
+HOOKSQFS_LOG_FILE=/tmp/hooksqfs.log \
+HOOKSQFS_LOG_INCLUDE=ALL \
 ./srcds_run
 ```
